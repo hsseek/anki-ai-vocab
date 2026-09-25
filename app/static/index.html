@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kanki</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <h1>Kanki</h1>
+    <span id="provider-label" class="badge">…</span>
+    <label class="setting">
+      Examples per meaning
+      <select id="num-examples">
+        <option value="1">1</option>
+        <option value="2">2</option>
+        <option value="3">3</option>
+      </select>
+    </label>
+  </header>
+
+  <main>
+    <!-- Step 1: enter a word -->
+    <form id="word-form" class="panel">
+      <input id="word-input" type="text" placeholder="Type a word or short phrase" autocomplete="off" autofocus>
+      <button id="generate-btn" type="submit">Generate</button>
+    </form>
+
+    <div id="status" class="status" hidden></div>
+
+    <!-- Step 2: pick meanings -->
+    <section id="results" class="panel" hidden>
+      <div class="row">
+        <label for="language-select">Language</label>
+        <select id="language-select"></select>
+        <span class="hint">Changing the language regenerates the results.</span>
+      </div>
+      <h2>Meanings</h2>
+      <ul id="meanings" class="meanings"></ul>
+    </section>
+
+    <!-- Step 3: edit the note, then add it -->
+    <section id="preview" class="panel" hidden>
+      <h2>Preview</h2>
+      <div class="grid2">
+        <label>Word <input id="field-word" type="text"></label>
+        <label>Language <input id="field-language" type="text"></label>
+      </div>
+      <div id="meaning-editors"></div>
+
+      <div class="row add-row">
+        <label for="deck-select">Deck</label>
+        <select id="deck-select"></select>
+        <button id="add-btn" type="button">Add to Anki</button>
+      </div>
+
+      <div id="duplicate-box" class="warning-box" hidden>
+        <p>A note for this word already exists in this deck.</p>
+        <button id="add-anyway-btn" type="button">Add anyway</button>
+        <button id="cancel-btn" type="button" class="secondary">Cancel</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

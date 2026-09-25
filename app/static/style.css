@@ -1,0 +1,156 @@
+:root {
+  --bg: #f6f5f1;
+  --panel: #ffffff;
+  --text: #1f2328;
+  --muted: #6a737d;
+  --border: #dcd8cf;
+  --accent: #2f6fb3;
+  --accent-text: #ffffff;
+  --error-bg: #fdecea;
+  --error-text: #8a1c14;
+  --success-bg: #e8f5e9;
+  --success-text: #1b5e20;
+  --warn-bg: #fff4d6;
+  --warn-text: #7a5300;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #18191b;
+    --panel: #222326;
+    --text: #e6e3dc;
+    --muted: #9aa0a6;
+    --border: #3a3c40;
+    --accent: #6ea8e0;
+    --accent-text: #0f1113;
+    --error-bg: #3b1d1a;
+    --error-text: #f4b4ad;
+    --success-bg: #1b3120;
+    --success-text: #a8d8ad;
+    --warn-bg: #3a2f14;
+    --warn-text: #f0d18a;
+    color-scheme: dark;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", "Noto Sans", "Noto Sans CJK KR", "Noto Sans CJK JP", sans-serif;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 20px 16px 8px;
+}
+
+h1 { font-size: 1.4rem; margin: 0; }
+h2 { font-size: 1rem; margin: 16px 0 8px; color: var(--muted); font-weight: 600; }
+
+.badge {
+  font-size: 0.8rem;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 10px;
+}
+
+.setting { margin-left: auto; font-size: 0.9rem; color: var(--muted); }
+
+main { max-width: 760px; margin: 0 auto; padding: 0 16px 48px; }
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+  margin-top: 16px;
+}
+
+#word-form { display: flex; gap: 8px; }
+#word-input { flex: 1; font-size: 1.15rem; }
+
+input, textarea, select, button { font: inherit; color: inherit; }
+
+input[type="text"], textarea, select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+
+textarea { width: 100%; resize: vertical; display: block; margin: 4px 0; }
+
+button {
+  background: var(--accent);
+  color: var(--accent-text);
+  border: none;
+  border-radius: 6px;
+  padding: 7px 16px;
+  cursor: pointer;
+  font-weight: 600;
+}
+button.secondary { background: transparent; color: var(--text); border: 1px solid var(--border); }
+button:disabled, select:disabled { opacity: 0.55; cursor: wait; }
+
+.row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.hint { font-size: 0.85rem; color: var(--muted); }
+
+.status { margin-top: 16px; padding: 10px 14px; border-radius: 8px; }
+.status.info { background: var(--panel); border: 1px solid var(--border); color: var(--muted); }
+.status.error { background: var(--error-bg); color: var(--error-text); }
+.status.success { background: var(--success-bg); color: var(--success-text); }
+
+.meanings { list-style: none; margin: 0; padding: 0; }
+.meanings li { padding: 4px 0; }
+.meanings label { display: flex; gap: 8px; align-items: baseline; cursor: pointer; }
+.pos { color: var(--accent); font-style: italic; font-size: 0.9em; }
+
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.grid2 input { width: 100%; }
+@media (max-width: 520px) { .grid2 { grid-template-columns: 1fr; } }
+
+label { display: block; font-size: 0.9rem; color: var(--muted); margin-top: 8px; }
+label input[type="text"], .meaning-editor input { width: 100%; display: block; margin-top: 4px; color: var(--text); }
+.meaning-editor .label { font-size: 0.9rem; color: var(--muted); margin-top: 8px; }
+.meaning-editor textarea { color: var(--text); }
+
+.meaning-editor {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin: 12px 0 0;
+  padding: 8px 14px 14px;
+}
+.meaning-editor legend { font-weight: 600; padding: 0 6px; }
+
+.flag {
+  display: inline-block;
+  margin-left: 8px;
+  font-size: 0.8rem;
+  color: var(--warn-text);
+  background: var(--warn-bg);
+  border-radius: 4px;
+  padding: 0 6px;
+}
+.masked .flag { margin: 4px 0 0; }
+
+.add-row { margin-top: 20px; }
+#deck-select { min-width: 200px; }
+
+.warning-box {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: var(--warn-bg);
+  color: var(--warn-text);
+}
+.warning-box p { margin: 0 0 8px; }
