@@ -1,14 +1,16 @@
-"""AnkiConnect client (API version 6) and the "AI Vocab" note type."""
+"""The "AI Vocab" note type and the AnkiConnect requests the browser sends.
 
-import httpx
+The server never talks to Anki. The browser calls AnkiConnect on the
+computer it runs on (http://127.0.0.1:8765), so cards go to the Anki on
+whichever computer you use. This module builds what the browser needs:
+the note type definition, the note itself and the duplicate search query.
+"""
 
 from app.notes import esc
 
-API_VERSION = 6
 MODEL_NAME = "AI Vocab"
 FIELDS = ["Word", "Language", "Definition", "Examples", "ExamplesMasked", "Synonyms"]
 TAGS = ["ai-vocab"]
-UNAVAILABLE_MESSAGE = "Open Anki desktop and make sure the AnkiConnect add-on is installed."
 
 # --- Card templates ---------------------------------------------------------
 
@@ -70,17 +72,6 @@ ol > li { margin: 0.4em 0; }
 """
 
 
-class AnkiError(Exception):
-    """AnkiConnect returned an error."""
-
-
-class AnkiUnavailableError(AnkiError):
-    """Anki is not running or AnkiConnect cannot be reached."""
-
-    def __init__(self):
-        super().__init__(UNAVAILABLE_MESSAGE)
-
-
 def search_quote(text: str) -> str:
     """Escape text for use inside a quoted Anki search term.
 
@@ -91,75 +82,33 @@ def search_quote(text: str) -> str:
     return text
 
 
-class AnkiClient:
-    def __init__(self, url: str, transport: httpx.BaseTransport | None = None):
-        # `transport` lets tests replace the network with httpx.MockTransport.
-        self.url = url
-        self.http = httpx.Client(transport=transport, timeout=10)
-        self._model_ready = False
+def note_type() -> dict:
+    """Parameters for AnkiConnect's createModel action."""
+    return {
+        "modelName": MODEL_NAME,
+        "inOrderFields": FIELDS,
+        "css": CARD_CSS,
+        "isCloze": False,
+        "cardTemplates": [
+            {"Name": "Forward", "Front": FORWARD_FRONT, "Back": FORWARD_BACK},
+            {"Name": "Reverse", "Front": REVERSE_FRONT, "Back": REVERSE_BACK},
+        ],
+    }
 
-    def invoke(self, action: str, **params):
-        """Call one AnkiConnect action and return its result."""
-        payload = {"action": action, "version": API_VERSION, "params": params}
-        try:
-            response = self.http.post(self.url, json=payload)
-            response.raise_for_status()
-            data = response.json()
-        except (httpx.ConnectError, httpx.TimeoutException):
-            raise AnkiUnavailableError()
-        except (httpx.HTTPError, ValueError) as exc:
-            raise AnkiError(f"Unexpected response from AnkiConnect: {exc}")
 
-        if not isinstance(data, dict) or "error" not in data or "result" not in data:
-            raise AnkiError("Unexpected response from AnkiConnect. Is it a recent version?")
-        if data["error"] is not None:
-            raise AnkiError(f"AnkiConnect error ({action}): {data['error']}")
-        return data["result"]
+def duplicate_query(deck: str, word: str) -> str:
+    """Anki search for "AI Vocab" notes in `deck` whose Word field equals `word`.
 
-    def deck_names(self) -> list[str]:
-        return self.invoke("deckNames")
+    Anki field searches ignore case, so "Run" matches "run". The Word field
+    is stored HTML-escaped, so the search uses the escaped form too.
+    """
+    return (
+        f'"deck:{search_quote(deck)}" '
+        f'"note:{search_quote(MODEL_NAME)}" '
+        f'"Word:{search_quote(esc(word))}"'
+    )
 
-    def ensure_model(self) -> None:
-        """Create the "AI Vocab" note type if it does not exist yet."""
-        if self._model_ready:
-            return
-        if MODEL_NAME not in self.invoke("modelNames"):
-            self.invoke(
-                "createModel",
-                modelName=MODEL_NAME,
-                inOrderFields=FIELDS,
-                css=CARD_CSS,
-                isCloze=False,
-                cardTemplates=[
-                    {"Name": "Forward", "Front": FORWARD_FRONT, "Back": FORWARD_BACK},
-                    {"Name": "Reverse", "Front": REVERSE_FRONT, "Back": REVERSE_BACK},
-                ],
-            )
-        self._model_ready = True
 
-    def find_duplicates(self, deck: str, word: str) -> list[int]:
-        """Find "AI Vocab" notes in `deck` whose Word field equals `word`.
-
-        Anki field searches ignore case, so "Run" matches "run". The Word field
-        is stored HTML-escaped, so the search uses the escaped form too.
-        """
-        query = (
-            f'"deck:{search_quote(deck)}" '
-            f'"note:{search_quote(MODEL_NAME)}" '
-            f'"Word:{search_quote(esc(word))}"'
-        )
-        return self.invoke("findNotes", query=query)
-
-    def add_note(self, deck: str, fields: dict[str, str], allow_duplicate: bool = False) -> int:
-        self.ensure_model()
-        return self.invoke(
-            "addNote",
-            note={
-                "deckName": deck,
-                "modelName": MODEL_NAME,
-                "fields": fields,
-                "tags": TAGS,
-                # Match our own check: duplicates only count within the same deck.
-                "options": {"allowDuplicate": allow_duplicate, "duplicateScope": "deck"},
-            },
-        )
+def build_note(deck: str, fields: dict[str, str]) -> dict:
+    """The `note` parameter for AnkiConnect's addNote action (without options)."""
+    return {"deckName": deck, "modelName": MODEL_NAME, "fields": fields, "tags": TAGS}

@@ -1,0 +1,24 @@
+# Runs the web app as a systemd *user* service on a server.
+#
+# Install:
+#   cp deploy/anki-ai-vocab.service ~/.config/systemd/user/
+#   loginctl enable-linger $USER      # keep user services running after logout
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now anki-ai-vocab
+
+[Unit]
+Description=anki-ai-vocab web app
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/anki-ai-vocab
+# Localhost only: Caddy (deploy/Caddyfile) adds HTTPS and the login in front.
+# Never 0.0.0.0: the app itself has no login.
+Environment=HOST=127.0.0.1
+Environment=PORT=8000
+ExecStart=%h/anki-ai-vocab/run.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

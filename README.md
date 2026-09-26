@@ -3,14 +3,16 @@
 A small local web app that turns a word into an Anki vocabulary note.
 You type a word, an LLM (Claude, OpenAI or Gemini) writes its meanings, definitions,
 examples and synonyms in the word's own language, you pick meanings and edit
-the preview, and the app adds one note to desktop Anki through AnkiConnect.
+the preview, and your browser adds one note to the Anki desktop app on the
+computer you are using, through AnkiConnect.
 
 - Works with any language the model knows; definitions and examples stay in
   the word's language, never translated.
 - Creates a note with a forward card (word → meaning) and a reverse card
   (definition + examples with the word blanked out → word).
-- Runs only on your machine (`127.0.0.1`). API keys stay on the server and
-  never reach the browser.
+- Run it on your own computer, or on a home server and open it from any of
+  your computers: cards always go to the Anki on the computer in front of you.
+- API keys stay on the server and never reach the browser.
 
 Requires Python 3.10+ and Anki desktop.
 
@@ -58,7 +60,8 @@ Requires Python 3.10+ and Anki desktop.
    out, the app tries the next one, and the label at the top shows
    "(fallback)". Other errors, such as a wrong API key, are shown right away.
 
-   `ANKICONNECT_URL` defaults to `http://127.0.0.1:8765`.
+   `ANKICONNECT_URL` defaults to `http://127.0.0.1:8765`. The *browser* calls
+   this address, so `127.0.0.1` means the Anki on the computer you browse from.
 
    `.env` holds your API key and is listed in `.gitignore`, so it is never committed.
 
@@ -71,7 +74,100 @@ Requires Python 3.10+ and Anki desktop.
    Open <http://127.0.0.1:8000>. The server listens on `127.0.0.1` only.
    Set `PORT=8001 ./run.sh` to use another port.
 
+   **The first time**, Anki shows a dialog: *"A website wants to access to
+   Anki"*. Click **Yes**. AnkiConnect then remembers the page's address (it is
+   added to `webCorsOriginList` in the AnkiConnect config). You need to do this
+   once per computer and per address you open the app at.
+
 5. **Switch providers** by changing `LLM_PROVIDER` in `.env` and restarting the server.
+
+## Running on a server (open it from any computer)
+
+The app can run on an always-on Linux server, such as a home server, while
+cards still go to the Anki on the computer you use: the server generates the
+content, and the page in your browser adds the note to your local Anki.
+
+On the server, [Caddy](https://caddyserver.com) sits in front of the app. It
+gets a free HTTPS certificate and asks for an ID and password on every
+request. The app itself only listens on `127.0.0.1`.
+
+```
+browser ──HTTPS + ID/password──▶ Caddy (443) ──▶ app (127.0.0.1:8000) ──▶ LLM
+   └──▶ AnkiConnect on your own computer (127.0.0.1:8765)
+```
+
+You need a domain name pointing to your home IP (a router's DDNS name works,
+e.g. `name.iptime.org`), and your router must forward **TCP 443 and 80** to the
+server. Port 80 is used to issue and renew the certificate and to redirect to
+HTTPS.
+
+1. **App.** Clone the repo to `~/anki-ai-vocab`, then create the virtual
+   environment and `.env` as in Setup. Run it as a user service on `127.0.0.1`:
+
+   ```bash
+   mkdir -p ~/.config/systemd/user
+   cp deploy/anki-ai-vocab.service ~/.config/systemd/user/
+   loginctl enable-linger $USER      # keep it running after logout
+   systemctl --user daemon-reload
+   systemctl --user enable --now anki-ai-vocab
+   ```
+
+2. **HTTPS and logins.** Run once, with your domain and the login IDs. It
+   installs Caddy from its official repository, asks for an optional email
+   (for certificate notices, and for the ZeroSSL fallback when Let's Encrypt
+   refuses, which can happen with shared DDNS domains), then asks for each
+   password. Only bcrypt hashes are stored, in `/etc/caddy/anki-ai-vocab.users`.
+
+   ```bash
+   sudo deploy/setup-caddy.sh name.iptime.org sun kay
+   ```
+
+   Later: `sudo deploy/set-password.sh ID` adds a login or changes a password,
+   and `sudo deploy/set-password.sh --delete ID` removes one.
+
+   **If public certificates are refused** for your domain (for example
+   `*.iptime.org`, whose DNS forbids all certificate authorities), add
+   `--private-cert`. Caddy then issues its own certificate, and each computer
+   must install its root certificate once (see below):
+
+   ```bash
+   sudo deploy/setup-caddy.sh --private-cert name.iptime.org sun kay
+   ```
+
+3. **Each computer.** Open Anki (with AnkiConnect), then open
+   `https://<your domain>` and log in. Click **Yes** in Anki's permission dialog.
+   Your browser may also ask to let the site access apps on your device or local
+   network; allow it, since that is how the page reaches your local Anki.
+
+### Installing the private root certificate (only with `--private-cert`)
+
+Download `https://<your domain>/root.crt` (the browser warns until the root is
+installed; `curl -k` works too) and check that its SHA-256 fingerprint matches
+the one `setup-caddy.sh` printed:
+
+```bash
+openssl x509 -in root.crt -noout -fingerprint -sha256
+```
+
+Then install it:
+
+- **Linux, Chrome/Chromium:** they use their own certificate store.
+  `sudo apt install libnss3-tools`, then
+  `certutil -d sql:$HOME/.pki/nssdb -A -t "C,," -n "anki-ai-vocab" -i root.crt`
+- **Linux, Firefox:** Settings → Privacy & Security → Certificates → View
+  Certificates → Authorities → Import, and tick "Trust this CA to identify websites".
+- **Windows (Chrome, Edge):** double-click `root.crt` → Install Certificate →
+  Current User → "Trusted Root Certification Authorities".
+- **macOS:** open it in Keychain Access (login keychain), then set it to "Always Trust".
+
+Restart the browser afterwards. Install the root only on computers you trust
+the server with: a trusted root can vouch for *any* website, so whoever controls
+the server could impersonate other sites to those computers.
+
+Everyone who logs in uses the server's API key and quota, so use long, unique
+passwords. After changing the code: `git pull` on the server, then
+`systemctl --user restart anki-ai-vocab`. Logs: `journalctl --user -u anki-ai-vocab`
+(app) and `journalctl -u caddy` (HTTPS and logins).
 
 ## Using it
 
@@ -102,7 +198,8 @@ When several meanings are selected they share one note, numbered the same way in
 .venv/bin/python -m pytest
 ```
 
-The tests mock the LLM SDKs and AnkiConnect and make no network calls.
+The tests mock the LLM SDKs and make no network calls. AnkiConnect is called
+by the browser (`app/static/app.js`), so it is not part of the Python tests.
 
 ## Project layout
 
@@ -112,9 +209,10 @@ app/config.py            .env loading and validation
 app/schemas.py           Pydantic models shared by providers and routes
 app/prompts.py           the shared system prompt
 app/providers/           LLMProvider interface, Claude/OpenAI/Gemini providers, factory
-app/anki.py              AnkiConnect client and the note type
+app/anki.py              the note type, note and duplicate query for AnkiConnect
 app/notes.py             builds the note's HTML fields
 app/masking.py           fallback masking and checks
-app/static/              HTML, CSS, JavaScript
+app/static/              HTML, CSS, JavaScript (including the AnkiConnect calls)
+deploy/                  server setup: systemd service, Caddyfile, login scripts
 tests/                   pytest tests
 ```

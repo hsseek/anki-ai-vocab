@@ -1,5 +1,8 @@
 // Kanki frontend: plain JavaScript, no build step.
 // Model text is always inserted with textContent / value, never innerHTML.
+//
+// The server generates the content; this page talks to AnkiConnect on the
+// computer the browser runs on, so cards go to *this* computer's Anki.
 
 "use strict";
 
@@ -80,11 +83,66 @@ function setBusy(busy) {
 }
 
 // ---------------------------------------------------------------------------
+// AnkiConnect, called directly from the browser
+// ---------------------------------------------------------------------------
+
+const ANKI_UNAVAILABLE = "Open Anki desktop and make sure the AnkiConnect add-on is installed.";
+let ankiAllowed = false; // AnkiConnect granted this page access
+let modelReady = false;  // the "AI Vocab" note type exists
+
+// Call one AnkiConnect action (API version 6) and return its result.
+async function anki(action, params = {}) {
+  let response;
+  try {
+    // No Content-Type header: this keeps it a "simple" request without a CORS preflight.
+    response = await fetch(info.ankiconnect_url, {
+      method: "POST",
+      body: JSON.stringify({ action, version: 6, params }),
+    });
+  } catch {
+    // Anki is closed, AnkiConnect is missing, or it rejected this page's origin.
+    throw new Error(ANKI_UNAVAILABLE);
+  }
+  const data = await response.json().catch(() => null);
+  if (!data || !("error" in data) || !("result" in data)) {
+    throw new Error("Unexpected response from AnkiConnect. Is the add-on up to date?");
+  }
+  if (data.error) throw new Error(`AnkiConnect error (${action}): ${data.error}`);
+  return data.result;
+}
+
+// Ask AnkiConnect for access. The first time, Anki shows a dialog asking
+// whether this page may use it; "Yes" adds the page to AnkiConnect's allowlist.
+async function connectAnki() {
+  if (ankiAllowed) return;
+  const res = await anki("requestPermission");
+  if (res.permission !== "granted") {
+    throw new Error(
+      `Anki refused access for ${location.origin}. Reload and click Yes in Anki's dialog, ` +
+      `or add ${location.origin} to "webCorsOriginList" in Tools → Add-ons → AnkiConnect → Config, then restart Anki.`
+    );
+  }
+  if (res.requireApikey) {
+    throw new Error("AnkiConnect has an API key set (apiKey), which this app does not support. Remove it in the AnkiConnect config.");
+  }
+  ankiAllowed = true;
+}
+
+// Create the "AI Vocab" note type in this computer's Anki if it is missing.
+async function ensureModel() {
+  if (modelReady) return;
+  const noteType = await api("/api/note-type");
+  const names = await anki("modelNames");
+  if (!names.includes(noteType.modelName)) await anki("createModel", noteType);
+  modelReady = true;
+}
+
+// ---------------------------------------------------------------------------
 // Startup
 // ---------------------------------------------------------------------------
 
-// Provider name and main model from /api/info.
-const info = { provider: "", model: "" };
+// From /api/info: provider name, main model and the AnkiConnect address.
+const info = { provider: "", model: "", ankiconnect_url: "http://127.0.0.1:8765" };
 
 function showModel(model) {
   const fallback = model !== info.model ? " (fallback)" : "";
@@ -103,7 +161,10 @@ async function loadInfo() {
 async function loadDecks() {
   const select = $("deck-select");
   try {
-    const { decks } = await api("/api/decks");
+    showStatus("Connecting to Anki… If Anki asks whether this site may access it, click Yes.", "info");
+    await connectAnki();
+    const decks = await anki("deckNames");
+    hideStatus();
     select.replaceChildren(...decks.map((d) => el("option", { value: d, textContent: d })));
     const last = load(STORAGE_DECK);
     // Use the deck chosen last time, or the first deck if it no longer exists.
@@ -248,13 +309,13 @@ function renderPreview() {
 // Add to Anki
 // ---------------------------------------------------------------------------
 
-function buildNote(allowDuplicate) {
+// The note as edited in the preview, in the shape /api/note expects.
+function buildNoteRequest() {
   const indexes = [...state.selected].sort((a, b) => a - b);
   return {
     word: $("field-word").value.trim(),
     language: $("field-language").value.trim(),
     deck: $("deck-select").value,
-    allow_duplicate: allowDuplicate,
     meanings: indexes.map((i) => {
       const e = state.edits[i];
       return {
@@ -272,22 +333,34 @@ async function addToAnki(allowDuplicate = false) {
   // Anki may have been opened after this page loaded: fetch the decks again.
   if (!$("deck-select").value && !(await loadDecks())) return;
 
-  const note = buildNote(allowDuplicate);
-  if (!note.word) return showStatus("The Word field is empty.", "error");
-  if (!note.deck) return showStatus("Choose a deck first.", "error");
-  if (note.meanings.length === 0) return showStatus("Select at least one meaning.", "error");
+  const request = buildNoteRequest();
+  if (!request.word) return showStatus("The Word field is empty.", "error");
+  if (!request.deck) return showStatus("Choose a deck first.", "error");
+  if (request.meanings.length === 0) return showStatus("Select at least one meaning.", "error");
 
   setBusy(true);
   $("duplicate-box").hidden = true;
   try {
-    const res = await api("/api/add", note);
-    if (res.status === "duplicate") {
-      $("duplicate-box").hidden = false;
-      hideStatus();
-      return;
+    await connectAnki();
+    // The server builds the HTML-escaped fields and the duplicate search.
+    const { note, duplicate_query } = await api("/api/note", request);
+
+    if (!allowDuplicate) {
+      const existing = await anki("findNotes", { query: duplicate_query });
+      if (existing.length > 0) {
+        $("duplicate-box").hidden = false;
+        hideStatus();
+        return;
+      }
     }
-    save(STORAGE_DECK, note.deck);
-    showStatus(`Added “${note.word}” to ${note.deck}.`, "success");
+
+    await ensureModel();
+    await anki("addNote", {
+      // duplicateScope "deck" matches our own check: duplicates only count within a deck.
+      note: { ...note, options: { allowDuplicate, duplicateScope: "deck" } },
+    });
+    save(STORAGE_DECK, request.deck);
+    showStatus(`Added “${request.word}” to ${request.deck}.`, "success");
     resetForNextWord();
   } catch (err) {
     showStatus(err.message, "error");
@@ -327,5 +400,5 @@ $("add-anyway-btn").addEventListener("click", () => addToAnki(true));
 $("cancel-btn").addEventListener("click", () => { $("duplicate-box").hidden = true; });
 
 initSettings();
-loadInfo();
-loadDecks();
+// The AnkiConnect address comes from /api/info, so load decks after it.
+loadInfo().then(loadDecks);

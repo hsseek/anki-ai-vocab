@@ -1,136 +1,47 @@
-"""AnkiConnect client, note formatting and duplicate handling.
+"""Note type, note building and duplicate search, plus the routes the browser uses.
 
-AnkiConnect is replaced with httpx.MockTransport, so no network is used.
+AnkiConnect itself is called by the browser (app/static/app.js), not the server.
 """
 
-import json
-
-import httpx
-import pytest
 from fastapi.testclient import TestClient
 
-from app.anki import (
-    FIELDS,
-    MODEL_NAME,
-    UNAVAILABLE_MESSAGE,
-    AnkiClient,
-    AnkiError,
-    AnkiUnavailableError,
-)
+from app.anki import FIELDS, MODEL_NAME, TAGS, build_note, duplicate_query, note_type
 from app.config import Settings
 from app.main import create_app
 from app.notes import build_fields
 from app.providers.base import Generation
 from app.schemas import NoteMeaning, WordResult
 
-URL = "http://anki.test"
+# --- Note type and duplicate search --------------------------------------------
 
 
-class FakeAnki:
-    """A tiny in-memory AnkiConnect. Records every request."""
-
-    def __init__(self, models=(MODEL_NAME,), decks=("Default", "Vocab"), existing=()):
-        self.models = list(models)
-        self.decks = list(decks)
-        self.existing = list(existing)  # note ids returned by findNotes
-        self.requests = []
-        self.errors = {}  # action -> error string
-
-    def handler(self, request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content)
-        self.requests.append(body)
-        action, params = body["action"], body["params"]
-        if action in self.errors:
-            return httpx.Response(200, json={"result": None, "error": self.errors[action]})
-        result = {
-            "deckNames": lambda: self.decks,
-            "modelNames": lambda: self.models,
-            "createModel": lambda: self.models.append(params["modelName"]) or {},
-            "findNotes": lambda: self.existing,
-            "addNote": lambda: 1234,
-        }[action]()
-        return httpx.Response(200, json={"result": result, "error": None})
-
-    def client(self) -> AnkiClient:
-        return AnkiClient(URL, transport=httpx.MockTransport(self.handler))
-
-    def actions(self):
-        return [r["action"] for r in self.requests]
-
-
-def offline_client() -> AnkiClient:
-    def refuse(request):
-        raise httpx.ConnectError("Connection refused", request=request)
-
-    return AnkiClient(URL, transport=httpx.MockTransport(refuse))
-
-
-# --- Client -----------------------------------------------------------------
-
-
-def test_requests_use_version_6():
-    fake = FakeAnki()
-    assert fake.client().deck_names() == ["Default", "Vocab"]
-    assert fake.requests[0] == {"action": "deckNames", "version": 6, "params": {}}
-
-
-def test_error_field_raises():
-    fake = FakeAnki()
-    fake.errors["deckNames"] = "collection is not available"
-    with pytest.raises(AnkiError, match="collection is not available"):
-        fake.client().deck_names()
-
-
-def test_offline_anki_gives_clear_message():
-    with pytest.raises(AnkiUnavailableError) as info:
-        offline_client().deck_names()
-    assert str(info.value) == UNAVAILABLE_MESSAGE
-
-
-def test_ensure_model_creates_note_type_once():
-    fake = FakeAnki(models=["Basic"])
-    client = fake.client()
-    client.ensure_model()
-    client.ensure_model()  # cached, no more requests
-
-    assert fake.actions() == ["modelNames", "createModel"]
-    params = fake.requests[1]["params"]
+def test_note_type_definition():
+    params = note_type()
     assert params["modelName"] == MODEL_NAME
     assert params["inOrderFields"] == FIELDS
+    assert params["isCloze"] is False
     assert [t["Name"] for t in params["cardTemplates"]] == ["Forward", "Reverse"]
     reverse = params["cardTemplates"][1]
     assert "{{Word}}" not in reverse["Front"] and "{{Synonyms}}" not in reverse["Front"]
     assert "{{ExamplesMasked}}" in reverse["Front"]
+    assert ".nightMode" in params["css"]
 
 
-def test_ensure_model_skips_existing_note_type():
-    fake = FakeAnki()
-    fake.client().ensure_model()
-    assert fake.actions() == ["modelNames"]
+def test_duplicate_query_is_escaped():
+    assert duplicate_query('My "Deck"', "rock & roll") == (
+        '"deck:My \\"Deck\\"" "note:AI Vocab" "Word:rock &amp; roll"'
+    )
 
 
-def test_find_duplicates_query():
-    fake = FakeAnki(existing=[42])
-    assert fake.client().find_duplicates('My "Deck"', "rock & roll") == [42]
-    query = fake.requests[0]["params"]["query"]
-    assert query == '"deck:My \\"Deck\\"" "note:AI Vocab" "Word:rock &amp; roll"'
+def test_duplicate_query_escapes_wildcards():
+    assert '"Word:a\\_b\\*"' in duplicate_query("Default", "a_b*")
 
 
-def test_find_duplicates_escapes_wildcards():
-    fake = FakeAnki()
-    fake.client().find_duplicates("Default", "a_b*")
-    assert '"Word:a\\_b\\*"' in fake.requests[0]["params"]["query"]
-
-
-def test_add_note_payload():
-    fake = FakeAnki()
-    note_id = fake.client().add_note("Vocab", {"Word": "run"}, allow_duplicate=True)
-    assert note_id == 1234
-    note = fake.requests[-1]["params"]["note"]
-    assert note["deckName"] == "Vocab"
-    assert note["modelName"] == MODEL_NAME
-    assert note["tags"] == ["ai-vocab"]
-    assert note["options"] == {"allowDuplicate": True, "duplicateScope": "deck"}
+def test_build_note():
+    assert build_note("Vocab", {"Word": "run"}) == {
+        "deckName": "Vocab", "modelName": MODEL_NAME, "fields": {"Word": "run"}, "tags": TAGS,
+    }
+    assert TAGS == ["ai-vocab"]
 
 
 # --- Note formatting ----------------------------------------------------------
@@ -188,7 +99,7 @@ def test_fields_are_html_escaped():
     assert fields["Synonyms"] == "x&amp;y"
 
 
-# --- Routes: duplicate flow and offline Anki ------------------------------------
+# --- Routes ------------------------------------------------------------------------
 
 
 class FakeProvider:
@@ -202,54 +113,57 @@ class FakeProvider:
         return Generation(WordResult.model_validate(self.result), "fake-fallback")
 
 
-SETTINGS = Settings(provider="claude", api_key="k", models=("m",), ankiconnect_url=URL)
-ADD_BODY = {
-    "word": "run",
+SETTINGS = Settings(provider="claude", api_key="k", models=("m",), ankiconnect_url="http://127.0.0.1:8765")
+NOTE_BODY = {
+    "word": " run ",
     "language": "English",
     "deck": "Vocab",
-    "meanings": [{"definition": "To move fast.", "examples": ["I run."], "examples_masked": ["I ___."]}],
+    "meanings": [{"part_of_speech": "verb", "definition": "To move <fast>.",
+                  "examples": ["I run."], "examples_masked": ["I ___."]}],
 }
 
 
-def make_app(anki, sample_result=None):
-    return TestClient(create_app(SETTINGS, FakeProvider(sample_result), anki))
+def make_app(sample_result=None):
+    return TestClient(create_app(SETTINGS, FakeProvider(sample_result)))
 
 
-def test_add_warns_about_duplicate_then_adds_anyway():
-    fake = FakeAnki(existing=[99])
-    client = make_app(fake.client())
-
-    first = client.post("/api/add", json=ADD_BODY).json()
-    assert first == {"status": "duplicate", "note_ids": [99]}
-    assert "addNote" not in fake.actions()
-
-    second = client.post("/api/add", json={**ADD_BODY, "allow_duplicate": True}).json()
-    assert second == {"status": "added", "note_id": 1234}
-    assert fake.requests[-1]["params"]["note"]["options"]["allowDuplicate"] is True
+def test_info_includes_ankiconnect_url():
+    assert make_app().get("/api/info").json() == {
+        "provider": "Fake", "model": "fake-model", "ankiconnect_url": "http://127.0.0.1:8765",
+    }
 
 
-def test_add_without_duplicate():
-    fake = FakeAnki()
-    res = make_app(fake.client()).post("/api/add", json=ADD_BODY).json()
-    assert res["status"] == "added"
-    assert fake.requests[-1]["params"]["note"]["options"]["allowDuplicate"] is False
+def test_note_type_route():
+    assert make_app().get("/api/note-type").json() == note_type()
 
 
-def test_routes_report_offline_anki():
-    # `with` runs the startup hook, which must not crash when Anki is offline.
-    with make_app(offline_client()) as client:
-        for response in (client.get("/api/decks"), client.post("/api/add", json=ADD_BODY)):
-            assert response.status_code == 503
-            assert response.json()["detail"] == UNAVAILABLE_MESSAGE
+def test_note_route_builds_escaped_note_and_query():
+    data = make_app().post("/api/note", json=NOTE_BODY).json()
+    note = data["note"]
+    assert note["deckName"] == "Vocab" and note["modelName"] == MODEL_NAME
+    assert note["tags"] == ["ai-vocab"]
+    assert note["fields"]["Word"] == "run"  # trimmed
+    assert "To move &lt;fast&gt;." in note["fields"]["Definition"]
+    assert data["duplicate_query"] == '"deck:Vocab" "note:AI Vocab" "Word:run"'
+
+
+def test_note_route_rejects_empty_selection():
+    response = make_app().post("/api/note", json={**NOTE_BODY, "meanings": []})
+    assert response.status_code == 422
+
+
+def test_server_has_no_anki_routes():
+    client = make_app()
+    assert client.get("/api/decks").status_code == 404
+    assert client.post("/api/add", json=NOTE_BODY).status_code in (404, 405)
 
 
 def test_generate_route_keeps_word_and_flags(sample_result):
     sample_result["meanings"][1]["examples_masked"][0] = "He runs a small shop."  # model missed it
-    client = make_app(FakeAnki().client(), sample_result)
+    client = make_app(sample_result)
     data = client.post("/api/generate", json={"word": " run ", "num_examples": 2}).json()
     assert data["word"] == "run"
     assert data["model"] == "fake-fallback"
     assert data["meanings"][0]["masked_flags"] == [False, False]
     assert data["meanings"][1]["masked_flags"] == [True, False]
     assert data["meanings"][1]["examples_masked"][0] == "He ___ a small shop."
-    assert client.get("/api/info").json() == {"provider": "Fake", "model": "fake-model"}

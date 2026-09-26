@@ -78,9 +78,8 @@ class NoteMeaning(BaseModel):
     synonyms: list[str] = []
 
 
-class AddNoteRequest(BaseModel):
+class NoteRequest(BaseModel):
     word: str = Field(min_length=1)
     language: str = ""
     deck: str = Field(min_length=1)
     meanings: list[NoteMeaning] = Field(min_length=1)
-    allow_duplicate: bool = False

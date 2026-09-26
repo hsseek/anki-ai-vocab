@@ -1,0 +1,43 @@
+# Caddy config: HTTPS and a login in front of the app, which itself listens
+# on 127.0.0.1:8000 only. deploy/setup-caddy.sh fills in the placeholders,
+# keeps either the "# public-cert" or the "# private-cert" lines, and
+# installs this as /etc/caddy/Caddyfile.
+{
+	# Public certificate (Let's Encrypt, ZeroSSL as fallback). The email is # public-cert
+	# used for certificate notices and needed for the ZeroSSL fallback. # public-cert
+	email __EMAIL__ # public-cert
+
+	# Private certificate: Caddy runs its own certificate authority. Don't try # private-cert
+	# to add its root to this server's trust store; clients install it. # private-cert
+	skip_install_trust # private-cert
+}
+
+__DOMAIN__ {
+	tls internal # private-cert
+
+	encode gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	# The private CA's root certificate, to install on your computers. It is # private-cert
+	# public by nature; only this one file is served, never the key next to it. # private-cert
+	handle /root.crt { # private-cert
+		root * /var/lib/caddy/.local/share/caddy/pki/authorities/local # private-cert
+		rewrite * /root.crt # private-cert
+		file_server # private-cert
+	} # private-cert
+
+	handle {
+		# Every page and API call needs an ID and password. Accounts (ID +
+		# bcrypt hash) live in this file; manage them with deploy/set-password.sh.
+		basic_auth {
+			import /etc/caddy/anki-ai-vocab.users
+		}
+		reverse_proxy 127.0.0.1:8000
+	}
+}

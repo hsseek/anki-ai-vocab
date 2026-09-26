@@ -27,7 +27,7 @@ class Settings:
     provider: str  # "claude", "openai" or "gemini"
     api_key: str
     models: tuple[str, ...]  # main model first, then fallbacks
-    ankiconnect_url: str
+    ankiconnect_url: str  # AnkiConnect address as seen from the browser's computer
 
 
 def load_settings(env: Mapping[str, str] | None = None) -> Settings:
