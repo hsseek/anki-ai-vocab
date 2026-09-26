@@ -11,7 +11,7 @@ from app.providers.base import LLMError, ModelUnavailableError, api_error_text
 from app.providers.claude import TOOL_NAME, ClaudeProvider
 from app.providers.gemini import GeminiProvider
 from app.providers.openai_provider import OpenAIProvider, strict_json_schema
-from app.schemas import WordResult
+from app.schemas import MarkedWordResult, WordResult
 
 
 class FakeCreate:
@@ -74,9 +74,9 @@ def sdk_error(cls):
 # --- Same result shape from both providers -------------------------------
 
 
-def test_both_providers_return_the_same_result(sample_result):
-    claude_client, claude_create = fake_claude(claude_response(sample_result))
-    openai_client, openai_create = fake_openai(openai_response(json.dumps(sample_result)))
+def test_both_providers_return_the_same_result(compact_result):
+    claude_client, claude_create = fake_claude(claude_response(compact_result))
+    openai_client, openai_create = fake_openai(openai_response(json.dumps(compact_result)))
 
     claude = ClaudeProvider("key", ["claude-test"], client=claude_client)
     gpt = OpenAIProvider("key", ["gpt-test"], client=openai_client)
@@ -94,20 +94,20 @@ def test_both_providers_return_the_same_result(sample_result):
     assert system_claude == system_openai
 
 
-def test_claude_forces_the_tool(sample_result):
-    client, create = fake_claude(claude_response(sample_result))
-    ClaudeProvider("key", ["claude-test"], client=client).generate("run", "English", 3)
+def test_claude_forces_the_tool(compact_result):
+    client, create = fake_claude(claude_response(compact_result))
+    ClaudeProvider("key", ["claude-test"], client=client).generate("run", "English", 2)
 
     call = create.calls[0]
     assert call["model"] == "claude-test"
     assert call["tool_choice"] == {"type": "tool", "name": TOOL_NAME}
-    assert call["tools"][0]["input_schema"] == WordResult.model_json_schema()
+    assert call["tools"][0]["input_schema"] == MarkedWordResult.model_json_schema()
     user_prompt = call["messages"][0]["content"]
-    assert "run" in user_prompt and "English" in user_prompt and "3" in user_prompt
+    assert "run" in user_prompt and "English" in user_prompt and "2" in user_prompt
 
 
-def test_openai_uses_strict_structured_output(sample_result):
-    client, create = fake_openai(openai_response(json.dumps(sample_result)))
+def test_openai_uses_strict_structured_output(compact_result):
+    client, create = fake_openai(openai_response(json.dumps(compact_result)))
     OpenAIProvider("key", ["gpt-test"], client=client).generate("run", None, 2)
 
     fmt = create.calls[0]["response_format"]
@@ -116,7 +116,7 @@ def test_openai_uses_strict_structured_output(sample_result):
 
 
 def test_strict_schema_closes_every_object():
-    schema = strict_json_schema(WordResult)
+    schema = strict_json_schema(MarkedWordResult)
     objects = [schema, *schema["$defs"].values()]
     for obj in objects:
         assert obj["additionalProperties"] is False
@@ -126,36 +126,36 @@ def test_strict_schema_closes_every_object():
 # --- Validation and retry --------------------------------------------------
 
 
-def test_claude_retries_once_after_invalid_output(sample_result):
-    client, create = fake_claude(claude_response({"meanings": "oops"}), claude_response(sample_result))
+def test_claude_retries_once_after_invalid_output(compact_result):
+    client, create = fake_claude(claude_response({"meanings": "oops"}), claude_response(compact_result))
     result = ClaudeProvider("key", ["m"], client=client).generate("run", None, 2).result
     assert len(create.calls) == 2
     assert result.detected_language == "English"
 
 
-def test_openai_retries_once_after_bad_json(sample_result):
-    client, create = fake_openai(openai_response("{not json"), openai_response(json.dumps(sample_result)))
+def test_openai_retries_once_after_bad_json(compact_result):
+    client, create = fake_openai(openai_response("{not json"), openai_response(json.dumps(compact_result)))
     OpenAIProvider("key", ["m"], client=client).generate("run", None, 2)
     assert len(create.calls) == 2
 
 
-def test_gives_up_after_two_invalid_outputs(sample_result):
-    bad = dict(sample_result, meanings=[])  # no meanings -> invalid
+def test_gives_up_after_two_invalid_outputs(compact_result):
+    bad = dict(compact_result, meanings=[])  # no meanings -> invalid
     client, create = fake_claude(claude_response(bad), claude_response(bad))
     with pytest.raises(LLMError, match="unexpected format twice"):
         ClaudeProvider("key", ["m"], client=client).generate("run", None, 2)
     assert len(create.calls) == 2
 
 
-def test_mismatched_masked_examples_are_invalid(sample_result):
-    sample_result["meanings"][0]["examples_masked"].pop()
-    client, _ = fake_openai(*[openai_response(json.dumps(sample_result))] * 2)
+def test_mismatched_masked_examples_are_invalid(compact_result):
+    compact_result["meanings"][0]["examples_marked"].pop()
+    client, _ = fake_openai(*[openai_response(json.dumps(compact_result))] * 2)
     with pytest.raises(LLMError):
         OpenAIProvider("key", ["m"], client=client).generate("run", None, 2)
 
 
-def test_truncated_claude_response_is_retried(sample_result):
-    client, create = fake_claude(claude_response({}, stop_reason="max_tokens"), claude_response(sample_result))
+def test_truncated_claude_response_is_retried(compact_result):
+    client, create = fake_claude(claude_response({}, stop_reason="max_tokens"), claude_response(compact_result))
     ClaudeProvider("key", ["m"], client=client).generate("run", None, 2)
     assert len(create.calls) == 2
 
@@ -209,10 +209,10 @@ def test_api_errors_are_not_retried():
 # --- Gemini (OpenAI-compatible endpoint) ------------------------------------
 
 
-def test_gemini_returns_the_same_result(sample_result):
-    client, create = fake_openai(openai_response(json.dumps(sample_result)))
+def test_gemini_returns_the_same_result(compact_result):
+    client, create = fake_openai(openai_response(json.dumps(compact_result)))
     result = GeminiProvider("key", ["gemini-test"], client=client).generate("run", None, 2).result
-    assert result == WordResult.model_validate(sample_result)
+    assert result == MarkedWordResult.model_validate(compact_result).expand(2)
     assert create.calls[0]["model"] == "gemini-test"
 
 
@@ -245,9 +245,9 @@ def test_api_error_text_falls_back_to_full_message():
 # --- Fallback models ---------------------------------------------------------
 
 
-def test_falls_back_to_next_model_when_overloaded(sample_result):
+def test_falls_back_to_next_model_when_overloaded(compact_result):
     client, create = fake_openai(sdk_error(openai.InternalServerError),
-                                 openai_response(json.dumps(sample_result)))
+                                 openai_response(json.dumps(compact_result)))
     provider = GeminiProvider("key", ["big-model", "lite-model"], client=client)
     generation = provider.generate("run", None, 2)
     assert generation.model == "lite-model"
@@ -255,8 +255,8 @@ def test_falls_back_to_next_model_when_overloaded(sample_result):
 
 
 @pytest.mark.parametrize("error_cls", [anthropic.RateLimitError, anthropic.APITimeoutError])
-def test_claude_rate_limit_and_timeout_trigger_fallback(error_cls, sample_result):
-    client, create = fake_claude(sdk_error(error_cls), claude_response(sample_result))
+def test_claude_rate_limit_and_timeout_trigger_fallback(error_cls, compact_result):
+    client, create = fake_claude(sdk_error(error_cls), claude_response(compact_result))
     generation = ClaudeProvider("key", ["a", "b"], client=client).generate("run", None, 2)
     assert generation.model == "b"
 

@@ -1,13 +1,13 @@
 """The LLMProvider interface. The rest of the app depends only on this module."""
 
 import logging
+from contextlib import closing
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
-from pydantic import ValidationError
-
 from app.prompts import build_user_prompt
-from app.schemas import WordResult
+from app.schemas import MarkedMeaning, MarkedWordResult, WordResult
+from app.streaming import MeaningParser
 
 log = logging.getLogger(__name__)
 
@@ -42,9 +42,9 @@ class Generation:
 class LLMProvider(ABC):
     """Base class for LLM providers.
 
-    Subclasses implement `_request`, which sends one request to one model and
-    returns the raw JSON object. `generate` adds Pydantic validation, one
-    retry, and fallback to the next model when a model is unavailable.
+    Subclasses provide blocking and streaming requests using the same compact
+    schema. Both paths validate and expand marked examples, retry invalid data
+    once, and fall back to the next model on temporary provider errors.
     """
 
     display_name: str  # e.g. "Claude", shown in the UI and in error messages
@@ -64,7 +64,7 @@ class LLMProvider(ABC):
 
         for model in self.models:
             try:
-                return Generation(self._generate_with(model, user_prompt), model)
+                return Generation(self._generate_with(model, user_prompt, num_examples), model)
             except ModelUnavailableError as exc:
                 log.warning("%s model %s unavailable: %s", self.display_name, model, exc)
                 last_error = exc
@@ -76,15 +76,15 @@ class LLMProvider(ABC):
             f"({', '.join(self.models)}). Try again shortly. Last error: {last_error}"
         )
 
-    def _generate_with(self, model: str, user_prompt: str) -> WordResult:
+    def _generate_with(self, model: str, user_prompt: str, num_examples: int) -> WordResult:
         """Ask one model, validating the result and retrying once if it is invalid."""
         last_error: Exception | None = None
 
         for attempt in (1, 2):  # first try + one retry
             try:
                 raw = self._request(model, user_prompt)
-                return WordResult.model_validate(raw)
-            except (ValidationError, InvalidResponseError) as exc:
+                return MarkedWordResult.model_validate(raw).expand(num_examples)
+            except (ValueError, InvalidResponseError) as exc:
                 log.warning("%s (%s) returned invalid data (attempt %d): %s",
                             self.display_name, model, attempt, exc)
                 last_error = exc
@@ -93,6 +93,45 @@ class LLMProvider(ABC):
             f"{self.display_name} returned data in an unexpected format twice. "
             f"Please try again. ({_short(last_error)})"
         )
+
+    def stream(self, word: str, language_override: str | None, num_examples: int):
+        """Yield completed meanings, resetting provisional results on retry/fallback."""
+        prompt = build_user_prompt(word, language_override, num_examples)
+        for model in self.models:
+            try:
+                for attempt in (1, 2):
+                    yield {"type": "start", "model": model, "attempt": attempt}
+                    parser = MeaningParser()
+                    try:
+                        with closing(self._stream_request(model, prompt)) as chunks:
+                            for chunk in chunks:
+                                for raw in parser.feed(chunk):
+                                    meaning = MarkedMeaning.model_validate(raw).expand(num_examples)
+                                    yield {
+                                        "type": "meaning", "model": model, "meaning": meaning,
+                                        "detected_language": parser.metadata.get("detected_language", ""),
+                                        "language_code": parser.metadata.get("language_code", ""),
+                                    }
+                        result = MarkedWordResult.model_validate_json(parser.text).expand(num_examples)
+                        yield {"type": "done", "model": model, "result": result}
+                        return
+                    except (ValueError, InvalidResponseError) as exc:
+                        log.warning("%s (%s) invalid streamed data (attempt %d): %s",
+                                    self.display_name, model, attempt, exc)
+                        if attempt == 2:
+                            raise LLMError(
+                                f"{self.display_name} returned invalid data twice. Please try again."
+                            ) from exc
+            except ModelUnavailableError as exc:
+                last_error = exc
+                log.warning("%s model %s unavailable: %s", self.display_name, model, exc)
+        if len(self.models) == 1:
+            raise last_error
+        raise LLMError(f"{self.display_name}: all models are unavailable. Last error: {last_error}")
+
+    @abstractmethod
+    def _stream_request(self, model: str, user_prompt: str):
+        """Yield JSON text deltas, raising on incomplete or refused responses."""
 
     @abstractmethod
     def _request(self, model: str, user_prompt: str) -> dict:

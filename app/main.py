@@ -9,10 +9,13 @@ AnkiConnect on the user's own computer (see app/anki.py and static/app.js).
 """
 
 import sys
+import json
+import logging
+from contextlib import closing
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.anki import build_note, duplicate_query, note_type
@@ -77,6 +80,42 @@ def create_app(settings: Settings | None = None, provider: LLMProvider | None = 
     def get_note_type():
         """createModel parameters, used by the browser if "AI Vocab" does not exist yet."""
         return note_type()
+
+    @app.post("/api/generate/stream")
+    def generate_stream(req: GenerateRequest):
+        word = req.word.strip()
+
+        def events():
+            def encode(event):
+                return "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
+
+            try:
+                with closing(provider.stream(word, req.language, req.num_examples)) as stream:
+                    for event in stream:
+                        if event["type"] == "meaning":
+                            event = {
+                                **event,
+                                "meaning": check_meaning(event["meaning"], word).model_dump(),
+                            }
+                        elif event["type"] == "done":
+                            result = event["result"]
+                            event = {"type": "done", "result": GenerateResponse(
+                                word=word, model=event["model"],
+                                detected_language=result.detected_language,
+                                language_code=result.language_code,
+                                meanings=[check_meaning(m, word) for m in result.meanings],
+                            ).model_dump()}
+                        yield encode(event)
+            except LLMError as exc:
+                yield encode({"type": "error", "detail": str(exc)})
+            except Exception:
+                logging.getLogger(__name__).exception("Vocabulary stream failed")
+                yield encode({"type": "error", "detail": "Generation failed. Please try again."})
+
+        return StreamingResponse(events(), media_type="text/event-stream", headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        })
 
     @app.post("/api/note")
     def make_note(req: NoteRequest):

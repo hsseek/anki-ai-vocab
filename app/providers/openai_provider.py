@@ -1,4 +1,4 @@
-"""OpenAI provider: Structured Outputs with a strict JSON schema built from WordResult."""
+"""OpenAI provider: Structured Outputs using the shared marked-example schema."""
 
 import copy
 import json
@@ -15,7 +15,7 @@ from app.providers.base import (
     ModelUnavailableError,
     api_error_text,
 )
-from app.schemas import WordResult
+from app.schemas import MarkedWordResult
 
 SCHEMA_NAME = "word_result"
 
@@ -64,7 +64,7 @@ class OpenAIProvider(LLMProvider):
             "json_schema": {
                 "name": SCHEMA_NAME,
                 "strict": True,
-                "schema": strict_json_schema(WordResult),
+                "schema": strict_json_schema(MarkedWordResult),
             },
         }
 
@@ -114,6 +114,38 @@ class OpenAIProvider(LLMProvider):
         if isinstance(exc, openai.APIStatusError) and exc.status_code >= 500:
             return f"{name}: '{model}' is overloaded or the API is having problems. Try again shortly. ({api_error_text(exc)})"
         return f"{name}: API error ({exc})."
+
+    def _stream_request(self, model: str, user_prompt: str):
+        try:
+            with self.client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ],
+                response_format=self.response_format,
+                stream=True,
+            ) as stream:
+                finished = False
+                for chunk in stream:
+                    if not chunk.choices:
+                        continue
+                    choice = chunk.choices[0]
+                    if getattr(choice.delta, "refusal", None):
+                        raise LLMError(f"{self.display_name}: the model refused the request.")
+                    if choice.delta.content:
+                        yield choice.delta.content
+                    if choice.finish_reason is not None:
+                        if choice.finish_reason != "stop":
+                            raise InvalidResponseError(
+                                f"Response ended with {choice.finish_reason}"
+                            )
+                        finished = True
+                if not finished:
+                    raise InvalidResponseError("Response stream ended before completion")
+        except openai.APIError as exc:
+            error_cls = ModelUnavailableError if _is_temporary(exc) else LLMError
+            raise error_cls(self._error_message(exc, model)) from exc
 
 
 def _is_temporary(exc: openai.APIError) -> bool:

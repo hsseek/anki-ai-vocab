@@ -1,4 +1,4 @@
-"""Claude provider: forces a single tool call whose input schema is WordResult."""
+"""Claude provider: forces one tool call using the shared marked-example schema."""
 
 import anthropic
 
@@ -12,7 +12,7 @@ from app.providers.base import (
     ModelUnavailableError,
     api_error_text,
 )
-from app.schemas import WordResult
+from app.schemas import MarkedWordResult
 
 TOOL_NAME = "save_word_result"
 MAX_TOKENS = 8192
@@ -30,7 +30,7 @@ class ClaudeProvider(LLMProvider):
         self.tool = {
             "name": TOOL_NAME,
             "description": "Save the vocabulary data for the word.",
-            "input_schema": WordResult.model_json_schema(),
+            "input_schema": MarkedWordResult.model_json_schema(),
         }
 
     def _request(self, model: str, user_prompt: str) -> dict:
@@ -53,6 +53,42 @@ class ClaudeProvider(LLMProvider):
             if block.type == "tool_use" and block.name == TOOL_NAME:
                 return block.input
         raise InvalidResponseError("no tool call in the response")
+
+    def _stream_request(self, model: str, user_prompt: str):
+        try:
+            with self.client.messages.create(
+                model=model, max_tokens=MAX_TOKENS, system=SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": user_prompt}],
+                tools=[self.tool], tool_choice={"type": "tool", "name": TOOL_NAME},
+                stream=True,
+            ) as stream:
+                tool_index = None
+                finished = False
+                stopped = False
+                for event in stream:
+                    if event.type == "content_block_start":
+                        block = event.content_block
+                        if block.type == "tool_use" and block.name == TOOL_NAME:
+                            if tool_index is not None:
+                                raise InvalidResponseError("Multiple vocabulary tool calls")
+                            tool_index = event.index
+                    elif event.type == "content_block_delta":
+                        if event.index == tool_index and event.delta.type == "input_json_delta":
+                            yield event.delta.partial_json
+                    elif event.type == "message_delta":
+                        if event.delta.stop_reason:
+                            if event.delta.stop_reason != "tool_use":
+                                raise InvalidResponseError(
+                                    f"Response ended with {event.delta.stop_reason}"
+                                )
+                            finished = True
+                    elif event.type == "message_stop":
+                        stopped = True
+                if tool_index is None or not finished or not stopped:
+                    raise InvalidResponseError("Incomplete vocabulary tool stream")
+        except anthropic.APIError as exc:
+            error_cls = ModelUnavailableError if _is_temporary(exc) else LLMError
+            raise error_cls(_error_message(exc, model)) from exc
 
 
 def _is_temporary(exc: anthropic.APIError) -> bool:

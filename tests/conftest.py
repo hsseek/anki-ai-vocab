@@ -32,3 +32,19 @@ def sample_result():
     import copy
 
     return copy.deepcopy(SAMPLE_RESULT)
+
+
+@pytest.fixture
+def compact_result(sample_result):
+    import copy
+
+    result = copy.deepcopy(sample_result)
+    marked = [
+        ["I [[run]] every morning.", "She [[ran]] to the bus."],
+        ["He [[runs]] a small shop.", "They [[run]] the hotel together."],
+    ]
+    for meaning, examples in zip(result["meanings"], marked):
+        del meaning["examples"]
+        del meaning["examples_masked"]
+        meaning["examples_marked"] = examples
+    return result

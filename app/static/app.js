@@ -80,8 +80,11 @@ function errorText(detail) {
 
 function setBusy(busy) {
   state.busy = busy;
-  for (const id of ["generate-btn", "add-btn", "add-anyway-btn", "language-select"]) {
+  for (const id of ["generate-btn", "add-btn", "add-anyway-btn", "language-select", "word-input", "num-examples"]) {
     $(id).disabled = busy;
+  }
+  for (const field of document.querySelectorAll("#results input, #preview input, #preview textarea, #preview select")) {
+    field.disabled = busy;
   }
 }
 
@@ -209,28 +212,59 @@ async function generate(word, language = null) {
   $("duplicate-box").hidden = true;
   showStatus(language ? `Generating in ${language}…` : "Generating…", "info");
   try {
-    const result = await api("/api/generate", {
-      word,
-      language,
-      num_examples: Number($("num-examples").value),
+    const response = await fetch("/api/generate/stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ word, language, num_examples: Number($("num-examples").value) }),
     });
-    state.result = result;
-    showModel(result.model);
-    state.edits = result.meanings.map((m) => ({
-      part_of_speech: m.part_of_speech,
-      definition: m.definition,
-      examples: [...m.examples],
-      examples_masked: [...m.examples_masked],
-      synonyms: m.synonyms.join(", "),
-    }));
-    state.selected = new Set(result.meanings.map((_, i) => i));
+    await readGenerationStream(response, (event) => {
+      if (event.type === "start") {
+        state.result = {
+          word, model: event.model, detected_language: language || "",
+          language_code: "", meanings: [],
+        };
+        state.edits = [];
+        state.selected = new Set();
+        $("results").hidden = true;
+        $("preview").hidden = true;
+        showModel(event.model);
+        showStatus(event.attempt > 1 ? "Checking the response again…" : "Generating…", "info");
+      } else if (event.type === "meaning") {
+        state.result.meanings.push(event.meaning);
+        state.result.detected_language = event.detected_language || state.result.detected_language;
+        state.result.language_code = event.language_code || state.result.language_code;
+        useResult(state.result);
+        showStatus(`${state.result.meanings.length} meaning(s) received · still generating…`, "info");
+      } else if (event.type === "done") {
+        useResult(event.result);
+      }
+    });
     hideStatus();
-    renderResults();
   } catch (err) {
+    state.result = null;
+    state.edits = [];
+    state.selected = new Set();
+    $("results").hidden = true;
+    $("preview").hidden = true;
     showStatus(err.message, "error");
   } finally {
     setBusy(false);
   }
+}
+
+function useResult(result) {
+  state.result = result;
+  showModel(result.model);
+  state.edits = result.meanings.map((m) => ({
+    part_of_speech: m.part_of_speech,
+    definition: m.definition,
+    examples: [...m.examples],
+    examples_masked: [...m.examples_masked],
+    synonyms: m.synonyms.join(", "),
+  }));
+  state.selected = new Set(result.meanings.map((_, i) => i));
+  renderResults();
+  setBusy(state.busy); // Newly rendered fields stay read-only until validation finishes.
 }
 
 // ---------------------------------------------------------------------------
@@ -242,7 +276,7 @@ function renderResults() {
 
   // Language dropdown: the fixed list plus the detected language if missing.
   const langSelect = $("language-select");
-  if (![...langSelect.options].some((o) => o.value === result.detected_language)) {
+  if (result.detected_language && ![...langSelect.options].some((o) => o.value === result.detected_language)) {
     langSelect.append(el("option", { value: result.detected_language, textContent: result.detected_language }));
   }
   $("detected-language").textContent = `Language: ${result.detected_language}`;
@@ -347,6 +381,7 @@ function buildNoteRequest() {
 }
 
 async function addToAnki(allowDuplicate = false) {
+  if (state.busy || !state.result) return;
   // Anki may have been opened after this page loaded: fetch the decks again.
   if (!$("deck-select").value && !(await loadDecks())) return;
 

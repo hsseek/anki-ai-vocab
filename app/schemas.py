@@ -2,6 +2,8 @@
 
 from pydantic import BaseModel, Field, model_validator
 
+from app.marked import expand_example
+
 # ---------------------------------------------------------------------------
 # What the LLM returns. Both providers generate their JSON schema from these
 # models, so keep them simple: no defaults and no extra constraints, because
@@ -40,6 +42,41 @@ class WordResult(BaseModel):
         if not self.meanings:
             raise ValueError("at least one meaning is required")
         return self
+
+
+class MarkedMeaning(BaseModel):
+    """Compact wire schema: the model writes each sentence only once."""
+
+    part_of_speech: str
+    label: str
+    definition: str
+    examples_marked: list[str] = Field(
+        description="Sentences with every target form wrapped in [[...]], e.g. She [[ran]] home."
+    )
+    synonyms: list[str]
+
+    def expand(self, num_examples: int) -> Meaning:
+        if len(self.examples_marked) != num_examples:
+            raise ValueError(f"Expected exactly {num_examples} examples per meaning")
+        pairs = [expand_example(sentence) for sentence in self.examples_marked]
+        return Meaning(
+            part_of_speech=self.part_of_speech, label=self.label,
+            definition=self.definition, synonyms=self.synonyms,
+            examples=[pair[0] for pair in pairs],
+            examples_masked=[pair[1] for pair in pairs],
+        )
+
+
+class MarkedWordResult(BaseModel):
+    detected_language: str
+    language_code: str
+    meanings: list[MarkedMeaning]
+
+    def expand(self, num_examples: int) -> WordResult:
+        return WordResult(
+            detected_language=self.detected_language, language_code=self.language_code,
+            meanings=[meaning.expand(num_examples) for meaning in self.meanings],
+        )
 
 
 # ---------------------------------------------------------------------------

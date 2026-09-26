@@ -173,7 +173,8 @@ passwords. After changing the code: `git pull` on the server, then
 
 1. Choose a language (or leave Auto-detect), type a word or short phrase and press Enter.
 2. Check the detected language. Pick another language from the dropdown to regenerate.
-3. Tick one or more meanings. Edit anything in the preview.
+3. Meanings appear as they arrive, with all meanings selected by default.
+   Once generation finishes, uncheck any you do not want and edit the preview.
    - ⚠ *contains the word* next to a definition means the definition gives the answer away.
    - ⚠ *auto-masked, please check* means the model left the word in a masked
      sentence and the app masked it with a simple pattern. Check that it looks right.
@@ -186,6 +187,14 @@ Detection happens in the same LLM request as content generation; choosing a lang
 mainly avoids regenerating after incorrect detection. For less waiting, select one
 example per meaning. The shared prompt requests concise definitions and examples
 while retaining all common meanings. Actual latency depends on the model and API load.
+
+Generation streams completed meanings into the preview. Editing and adding to Anki
+become available after the full response passes validation. A retry or fallback
+clears provisional results; a failed or interrupted stream cannot be added as a note.
+The model writes each example once, marking every target form with double brackets
+(for example, `She [[ran]] home.`). The server derives both `She ran home.` and
+`She ___ home.` from that sentence. No marker syntax reaches Anki, and the existing
+Forward and Reverse card types remain unchanged.
 
 New Anki cards abbreviate English part-of-speech labels: noun → n, verb → v,
 adjective → adj, adverb → adv, pronoun → pron, preposition → prep,
@@ -206,9 +215,12 @@ When several meanings are selected they share one note, numbered the same way in
 
 ```bash
 .venv/bin/python -m pytest
+node --test tests/test_frontend.cjs
 ```
 
-The tests mock the LLM SDKs and make no network calls. AnkiConnect is called
+Tests mock all LLM SDKs, including streamed chunks, and make no network calls.
+The frontend tests require Node.js 18+ (only for tests, not for running the app).
+AnkiConnect is called
 by the browser (`app/static/app.js`), so it is not part of the Python tests.
 
 ## Project layout

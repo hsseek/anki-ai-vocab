@@ -16,16 +16,18 @@ Never translate into another language.
    - `label`: a short gloss of a few words, used in a selection list.
    - `definition`: one concise, learner-friendly sentence. It must NOT contain the target word \
 or any obvious form of it.
-   - `examples`: exactly the requested number of short, natural example sentences using the word \
-in this meaning. Use only enough context to make the meaning clear.
-   - `examples_masked`: the same sentences in the same order, with EVERY occurrence of the \
-target word replaced by `___`. This includes inflected or conjugated forms (e.g. "ran" and \
-"running" for "run", conjugated verbs and attached endings in other languages) and every part \
-of a multi-word expression. Nothing else in the sentence changes.
+   - `examples_marked`: exactly the requested number of short, natural example sentences. \
+Write each sentence ONCE, wrapping EVERY occurrence of the target in [[double brackets]], \
+e.g. "She [[ran]] home." for "run". Include inflected or conjugated forms, attached endings \
+in other languages, and all parts of multi-word expressions. For separated parts use separate \
+spans: "She [[took]] her coat [[off]]." Mark only the target forms, not surrounding context. \
+Every sentence must have at least one nonempty marked span. Do not produce separate masked sentences.
    - `synonyms`: a few synonyms or closely related words in the same language. \
 Use an empty list if there are none.
 5. Keep the output concise without omitting common meanings or requested examples. \
 Do not repeat equivalent senses or add commentary outside the structured data.
+6. Output detected_language and language_code first, then meanings. Complete each meaning \
+before starting the next so it can be displayed immediately.
 """
 
 
