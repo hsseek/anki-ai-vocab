@@ -14,16 +14,18 @@ Never translate into another language.
 4. Return all common meanings of the word. For each meaning give:
    - `part_of_speech`: the part of speech, written in the word's language.
    - `label`: a short gloss of a few words, used in a selection list.
-   - `definition`: a clear, learner-friendly definition. It must NOT contain the target word \
+   - `definition`: one concise, learner-friendly sentence. It must NOT contain the target word \
 or any obvious form of it.
-   - `examples`: exactly the requested number of natural example sentences using the word \
-in this meaning.
+   - `examples`: exactly the requested number of short, natural example sentences using the word \
+in this meaning. Use only enough context to make the meaning clear.
    - `examples_masked`: the same sentences in the same order, with EVERY occurrence of the \
 target word replaced by `___`. This includes inflected or conjugated forms (e.g. "ran" and \
 "running" for "run", conjugated verbs and attached endings in other languages) and every part \
 of a multi-word expression. Nothing else in the sentence changes.
    - `synonyms`: a few synonyms or closely related words in the same language. \
 Use an empty list if there are none.
+5. Keep the output concise without omitting common meanings or requested examples. \
+Do not repeat equivalent senses or add commentary outside the structured data.
 """
 
 
@@ -32,7 +34,7 @@ def build_user_prompt(word: str, language_override: str | None, num_examples: in
     lines = [f"Word: {word}"]
     if language_override:
         lines.append(
-            f"Treat the word as {language_override}. "
+            f"Treat the word as {language_override}; do not auto-detect or consider other languages. "
             f"Set detected_language to {language_override} and write everything in {language_override}."
         )
     else:

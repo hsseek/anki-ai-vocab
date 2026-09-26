@@ -4,6 +4,7 @@ AnkiConnect itself is called by the browser (app/static/app.js), not the server.
 """
 
 from fastapi.testclient import TestClient
+import pytest
 
 from app.anki import FIELDS, MODEL_NAME, TAGS, build_note, duplicate_query, note_type
 from app.config import Settings
@@ -56,10 +57,25 @@ def test_single_meaning_is_not_numbered():
     fields = build_fields("run", "English", [
         meaning("verb", "To move fast.", ["I run."], ["I ___."], ["sprint", "jog"]),
     ])
-    assert fields["Definition"] == '<span class="pos">verb</span> To move fast.'
+    assert fields["Definition"] == '<span class="pos">(v)</span> To move fast.'
     assert fields["Examples"] == "<ul><li>I run.</li></ul>"
     assert fields["ExamplesMasked"] == "<ul><li>I ___.</li></ul>"
     assert fields["Synonyms"] == "sprint, jog"
+
+
+@pytest.mark.parametrize("label, expected", [
+    ("noun", "n"), (" Adjective ", "adj"), ("ADVERB", "adv"),
+    ("pronoun", "pron"), ("preposition", "prep"), ("conjunction", "conj"),
+    ("interjection", "interj"), ("Verb.", "v"), ("adj", "adj"),
+    ("명사", "명사"), ("<custom>", "&lt;custom&gt;"),
+])
+def test_note_route_abbreviates_edited_pos_and_escapes_unknown_labels(label, expected):
+    body = {**NOTE_BODY, "meanings": [{"part_of_speech": label, "definition": "A meaning."}]}
+    response = make_app().post("/api/note", json=body)
+    assert response.status_code == 200
+    assert response.json()["note"]["fields"]["Definition"] == (
+        f'<span class="pos">({expected})</span> A meaning.'
+    )
 
 
 def test_multiple_meanings_are_numbered_consistently():
@@ -68,8 +84,8 @@ def test_multiple_meanings_are_numbered_consistently():
         meaning("verb", "To manage.", ["He runs a shop."], ["He ___ a shop."], []),
     ])
     assert fields["Definition"] == (
-        '<ol><li><span class="pos">verb</span> To move fast.</li>'
-        '<li><span class="pos">verb</span> To manage.</li></ol>'
+        '<ol><li><span class="pos">(v)</span> To move fast.</li>'
+        '<li><span class="pos">(v)</span> To manage.</li></ol>'
     )
     # Blank example lines are dropped.
     assert fields["Examples"] == (

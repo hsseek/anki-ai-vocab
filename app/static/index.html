@@ -21,6 +21,11 @@
   </header>
 
   <main>
+    <div class="row">
+      <label for="language-select">Language</label>
+      <select id="language-select"></select>
+      <span class="hint">Choose before generating. Your choice is remembered.</span>
+    </div>
     <!-- Step 1: enter a word -->
     <form id="word-form" class="panel">
       <input id="word-input" type="text" placeholder="Type a word or short phrase" autocomplete="off" autofocus>
@@ -32,9 +37,7 @@
     <!-- Step 2: pick meanings -->
     <section id="results" class="panel" hidden>
       <div class="row">
-        <label for="language-select">Language</label>
-        <select id="language-select"></select>
-        <span class="hint">Changing the language regenerates the results.</span>
+        <span id="detected-language" class="hint"></span>
       </div>
       <h2>Meanings</h2>
       <ul id="meanings" class="meanings"></ul>

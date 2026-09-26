@@ -13,6 +13,21 @@ from app.schemas import NoteMeaning
 
 EMPTY_ITEM = "—"  # keeps numbering aligned when a meaning has no synonyms
 
+# Normalize known English labels at the final formatting boundary, including
+# labels edited by the user. Preserve unfamiliar and non-English labels.
+POS_ABBREVIATIONS = {
+    "noun": "n", "verb": "v", "adjective": "adj", "adverb": "adv",
+    "pronoun": "pron", "preposition": "prep", "conjunction": "conj",
+    "interjection": "interj", "determiner": "det", "article": "art",
+    "numeral": "num", "auxiliary verb": "aux", "modal verb": "modal",
+    "phrasal verb": "phr v", "transitive verb": "vt", "intransitive verb": "vi",
+}
+
+
+def abbreviate_pos(text: str) -> str:
+    label = text.strip()
+    return POS_ABBREVIATIONS.get(label.casefold().rstrip("."), label)
+
 
 def esc(text: str) -> str:
     """HTML-escape text for an Anki field."""
@@ -24,7 +39,8 @@ def _clean(items: list[str]) -> list[str]:
 
 
 def _definition(m: NoteMeaning) -> str:
-    pos = f'<span class="pos">{esc(m.part_of_speech)}</span> ' if m.part_of_speech.strip() else ""
+    label = abbreviate_pos(m.part_of_speech)
+    pos = f'<span class="pos">({esc(label)})</span> ' if label else ""
     return pos + esc(m.definition)
 
 

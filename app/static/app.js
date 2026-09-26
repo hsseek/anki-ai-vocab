@@ -12,11 +12,13 @@ const LANGUAGES = ["English", "Korean", "Japanese"];
 
 const STORAGE_DECK = "kanki.lastDeck";
 const STORAGE_EXAMPLES = "kanki.numExamples";
+const STORAGE_LANGUAGE = "kanki.language";
 
 const $ = (id) => document.getElementById(id);
 
 // Current word and the user's edits for each meaning (same order as the results).
 const state = {
+  busy: false,
   result: null,      // response from /api/generate
   edits: [],         // editable copy of each meaning
   selected: new Set(), // indexes of checked meanings
@@ -77,6 +79,7 @@ function errorText(detail) {
 }
 
 function setBusy(busy) {
+  state.busy = busy;
   for (const id of ["generate-btn", "add-btn", "add-anyway-btn", "language-select"]) {
     $(id).disabled = busy;
   }
@@ -177,6 +180,15 @@ async function loadDecks() {
 }
 
 function initSettings() {
+  const language = $("language-select");
+  const storedLanguage = load(STORAGE_LANGUAGE) || "";
+  const languages = [...LANGUAGES];
+  if (storedLanguage && !languages.includes(storedLanguage)) languages.push(storedLanguage);
+  language.replaceChildren(
+    el("option", { value: "", textContent: "Auto-detect" }),
+    ...languages.map((l) => el("option", { value: l, textContent: l })),
+  );
+  language.value = storedLanguage;
   const select = $("num-examples");
   const stored = load(STORAGE_EXAMPLES);
   select.value = ["1", "2", "3"].includes(stored) ? stored : "2";
@@ -188,9 +200,14 @@ function initSettings() {
 // ---------------------------------------------------------------------------
 
 async function generate(word, language = null) {
+  if (state.busy) return;
   setBusy(true);
+  // A failed regeneration must not leave an older word available to add.
+  state.result = null;
+  $("results").hidden = true;
+  $("preview").hidden = true;
   $("duplicate-box").hidden = true;
-  showStatus(language ? `Regenerating as ${language}…` : "Generating…", "info");
+  showStatus(language ? `Generating in ${language}…` : "Generating…", "info");
   try {
     const result = await api("/api/generate", {
       word,
@@ -206,7 +223,7 @@ async function generate(word, language = null) {
       examples_masked: [...m.examples_masked],
       synonyms: m.synonyms.join(", "),
     }));
-    state.selected = new Set();
+    state.selected = new Set(result.meanings.map((_, i) => i));
     hideStatus();
     renderResults();
   } catch (err) {
@@ -224,11 +241,11 @@ function renderResults() {
   const { result } = state;
 
   // Language dropdown: the fixed list plus the detected language if missing.
-  const languages = [...LANGUAGES];
-  if (!languages.includes(result.detected_language)) languages.push(result.detected_language);
   const langSelect = $("language-select");
-  langSelect.replaceChildren(...languages.map((l) => el("option", { value: l, textContent: l })));
-  langSelect.value = result.detected_language;
+  if (![...langSelect.options].some((o) => o.value === result.detected_language)) {
+    langSelect.append(el("option", { value: result.detected_language, textContent: result.detected_language }));
+  }
+  $("detected-language").textContent = `Language: ${result.detected_language}`;
 
   // Meanings as checkboxes.
   const list = $("meanings");
@@ -387,11 +404,15 @@ function resetForNextWord() {
 $("word-form").addEventListener("submit", (event) => {
   event.preventDefault();
   const word = $("word-input").value.trim();
-  if (word) generate(word);
+  if (word) generate(word, $("language-select").value || null);
 });
 
 $("language-select").addEventListener("change", () => {
-  if (state.result) generate(state.result.word, $("language-select").value);
+  const language = $("language-select").value;
+  save(STORAGE_LANGUAGE, language);
+  // Use the current input, not the previous result, if the user has typed a new word.
+  const word = $("word-input").value.trim();
+  if (state.result && word) generate(word, language || null);
 });
 
 $("deck-select").addEventListener("change", () => save(STORAGE_DECK, $("deck-select").value));

@@ -171,7 +171,7 @@ passwords. After changing the code: `git pull` on the server, then
 
 ## Using it
 
-1. Type a word or short phrase and press Enter.
+1. Choose a language (or leave Auto-detect), type a word or short phrase and press Enter.
 2. Check the detected language. Pick another language from the dropdown to regenerate.
 3. Tick one or more meanings. Edit anything in the preview.
    - ⚠ *contains the word* next to a definition means the definition gives the answer away.
@@ -181,6 +181,16 @@ passwords. After changing the code: `git pull` on the server, then
    If the word already exists in that deck, you can **Add anyway** or **Cancel**.
 
 The number of example sentences per meaning (1–3) is in the top right.
+Language selection is available before generation and remembered in this browser.
+Detection happens in the same LLM request as content generation; choosing a language
+mainly avoids regenerating after incorrect detection. For less waiting, select one
+example per meaning. The shared prompt requests concise definitions and examples
+while retaining all common meanings. Actual latency depends on the model and API load.
+
+New Anki cards abbreviate English part-of-speech labels: noun → n, verb → v,
+adjective → adj, adverb → adv, pronoun → pron, preposition → prep,
+conjunction → conj, interjection → interj, determiner → det, article → art.
+Other language labels are preserved. Existing Anki notes are not modified.
 
 ## The "AI Vocab" note type
 
