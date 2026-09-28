@@ -125,6 +125,48 @@ def test_streams_same_result_and_closes_sdk(provider_class, compact_result, samp
     assert "examples_marked" in json.dumps(schema)
 
 
+def test_stream_logs_private_timing_metrics(caplog, compact_result):
+    client, _ = fake_openai(openai_stream(compact_result))
+    provider = OpenAIProvider("key", ["fast-model"], client=client)
+
+    with caplog.at_level("INFO", logger="uvicorn.error.kanki.metrics"):
+        events = list(provider.stream(
+            "a-private-word", "English", 2, request_id="req123"
+        ))
+
+    metrics = [json.loads(record.message) for record in caplog.records
+               if record.name == "uvicorn.error.kanki.metrics"]
+    names = [item["metric"] for item in metrics]
+    assert names == [
+        "generation_started", "attempt_started", "first_chunk",
+        "first_meaning", "attempt_completed",
+    ]
+    completed = metrics[-1]
+    assert completed["request_id"] == "req123"
+    assert completed["model"] == "fast-model"
+    assert completed["meaning_count"] == 2
+    assert completed["first_chunk_ms"] >= 0
+    assert completed["first_meaning_ms"] >= completed["first_chunk_ms"]
+    assert completed["total_ms"] >= completed["first_meaning_ms"]
+    assert events[0]["request_id"] == "req123"
+    assert "a-private-word" not in caplog.text
+
+
+def test_invalid_attempt_is_visible_in_metrics(caplog, compact_result):
+    client, _ = fake_openai(
+        openai_stream(compact_result, finish="length"), openai_stream(compact_result)
+    )
+    with caplog.at_level("INFO", logger="uvicorn.error.kanki.metrics"):
+        list(OpenAIProvider("k", ["m"], client=client).stream(
+            "run", None, 2, request_id="retry1"
+        ))
+    metrics = [json.loads(record.message)["metric"] for record in caplog.records
+               if record.name == "uvicorn.error.kanki.metrics"]
+    assert metrics.count("attempt_invalid") == 1
+    assert metrics.count("attempt_started") == 2
+    assert metrics[-1] == "attempt_completed"
+
+
 def test_invalid_stream_resets_and_retries(compact_result):
     client, create = fake_openai(openai_stream(compact_result, finish="length"),
                                  openai_stream(compact_result))
@@ -184,6 +226,7 @@ def test_stream_route_checks_meanings_and_preserves_note_shape(compact_result):
     assert response.headers["cache-control"] == "no-cache, no-transform"
     events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
     assert [e["type"] for e in events] == ["start", "meaning", "meaning", "done"]
+    assert len(events[0]["request_id"]) == 12
     assert events[1]["meaning"]["masked_flags"] == [True, False]
     assert events[-1]["result"]["meanings"][0]["examples_masked"][0] == "I ___ and ___."
 

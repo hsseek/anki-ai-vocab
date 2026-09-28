@@ -169,6 +169,28 @@ passwords. After changing the code: `git pull` on the server, then
 `systemctl --user restart anki-ai-vocab`. Logs: `journalctl --user -u anki-ai-vocab`
 (app) and `journalctl -u caddy` (HTTPS and logins).
 
+### Generation performance logs
+
+Each generation writes privacy-safe JSON timing records to the app's systemd
+journal. They include the provider and model, retries/fallbacks, time to the
+first provider chunk, first complete meaning, total generation time, and
+browser-observed delivery time. Words, definitions, examples, API keys and
+passwords are never logged.
+
+View raw metrics or summarize all retained runs:
+
+```bash
+journalctl --user -u anki-ai-vocab -o cat | grep '"metric"'
+journalctl --user -u anki-ai-vocab -o cat | \
+  ~/anki-ai-vocab/.venv/bin/python ~/anki-ai-vocab/scripts/summarize_metrics.py
+```
+
+The summary reports the median (p50) and 95th-percentile (p95) latency per
+model for the provider, server and browser milestones, plus invalid responses
+and model-unavailable fallbacks. The gap between server and browser timings
+shows delivery overhead. Collect several normal words per language before
+comparing models.
+
 ## Using it
 
 1. Choose a language (or leave Auto-detect), type a word or short phrase and press Enter.

@@ -105,6 +105,14 @@ class GenerateResponse(BaseModel):
     meanings: list[CheckedMeaning]
 
 
+class ClientGenerationMetric(BaseModel):
+    """Browser-observed latency; contains no word or generated content."""
+
+    request_id: str = Field(min_length=1, max_length=32, pattern=r"^[a-zA-Z0-9_-]+$")
+    event: str = Field(pattern=r"^(first_meaning|complete|error)$")
+    elapsed_ms: int = Field(ge=0, le=300_000)
+
+
 class NoteMeaning(BaseModel):
     """One meaning as edited by the user in the preview."""
 

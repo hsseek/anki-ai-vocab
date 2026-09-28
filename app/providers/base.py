@@ -1,11 +1,13 @@
 """The LLMProvider interface. The rest of the app depends only on this module."""
 
 import logging
+import time
 from contextlib import closing
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 from app.prompts import build_user_prompt
+from app.metrics import elapsed_ms, emit_metric
 from app.schemas import MarkedMeaning, MarkedWordResult, WordResult
 from app.streaming import MeaningParser
 
@@ -94,28 +96,95 @@ class LLMProvider(ABC):
             f"Please try again. ({_short(last_error)})"
         )
 
-    def stream(self, word: str, language_override: str | None, num_examples: int):
+    def stream(
+        self,
+        word: str,
+        language_override: str | None,
+        num_examples: int,
+        request_id: str = "unknown",
+    ):
         """Yield completed meanings, resetting provisional results on retry/fallback."""
         prompt = build_user_prompt(word, language_override, num_examples)
-        for model in self.models:
+        generation_start = time.perf_counter()
+        emit_metric(
+            "generation_started", request_id,
+            provider=self.display_name, model_count=len(self.models),
+            num_examples=num_examples, language_override=bool(language_override),
+        )
+        for model_index, model in enumerate(self.models):
             try:
                 for attempt in (1, 2):
-                    yield {"type": "start", "model": model, "attempt": attempt}
+                    attempt_start = time.perf_counter()
+                    first_chunk_ms = None
+                    first_meaning_ms = None
+                    generation_first_meaning_ms = None
+                    output_chars = 0
+                    meaning_count = 0
+                    emit_metric(
+                        "attempt_started", request_id, provider=self.display_name,
+                        model=model, model_index=model_index, attempt=attempt,
+                    )
+                    yield {
+                        "type": "start", "model": model, "attempt": attempt,
+                        "request_id": request_id,
+                    }
                     parser = MeaningParser()
                     try:
                         with closing(self._stream_request(model, prompt)) as chunks:
                             for chunk in chunks:
+                                now = time.perf_counter()
+                                output_chars += len(chunk)
+                                if first_chunk_ms is None:
+                                    first_chunk_ms = elapsed_ms(attempt_start, now)
+                                    emit_metric(
+                                        "first_chunk", request_id, provider=self.display_name,
+                                        model=model, attempt=attempt,
+                                        elapsed_ms=first_chunk_ms,
+                                    )
                                 for raw in parser.feed(chunk):
                                     meaning = MarkedMeaning.model_validate(raw).expand(num_examples)
+                                    meaning_count += 1
+                                    if first_meaning_ms is None:
+                                        first_meaning_ms = elapsed_ms(
+                                            attempt_start, time.perf_counter()
+                                        )
+                                        generation_first_meaning_ms = elapsed_ms(
+                                            generation_start, time.perf_counter()
+                                        )
+                                        emit_metric(
+                                            "first_meaning", request_id,
+                                            provider=self.display_name, model=model,
+                                            attempt=attempt, elapsed_ms=first_meaning_ms,
+                                            generation_elapsed_ms=generation_first_meaning_ms,
+                                        )
                                     yield {
                                         "type": "meaning", "model": model, "meaning": meaning,
                                         "detected_language": parser.metadata.get("detected_language", ""),
                                         "language_code": parser.metadata.get("language_code", ""),
                                     }
                         result = MarkedWordResult.model_validate_json(parser.text).expand(num_examples)
+                        finished = time.perf_counter()
+                        emit_metric(
+                            "attempt_completed", request_id, provider=self.display_name,
+                            model=model, model_index=model_index, attempt=attempt,
+                            first_chunk_ms=first_chunk_ms,
+                            first_meaning_ms=first_meaning_ms,
+                            generation_first_meaning_ms=generation_first_meaning_ms,
+                            total_ms=elapsed_ms(attempt_start, finished),
+                            generation_total_ms=elapsed_ms(generation_start, finished),
+                            meaning_count=len(result.meanings),
+                            output_chars=output_chars,
+                        )
                         yield {"type": "done", "model": model, "result": result}
                         return
                     except (ValueError, InvalidResponseError) as exc:
+                        emit_metric(
+                            "attempt_invalid", request_id, provider=self.display_name,
+                            model=model, attempt=attempt,
+                            elapsed_ms=elapsed_ms(attempt_start, time.perf_counter()),
+                            meaning_count=meaning_count,
+                            error_type=type(exc).__name__,
+                        )
                         log.warning("%s (%s) invalid streamed data (attempt %d): %s",
                                     self.display_name, model, attempt, exc)
                         if attempt == 2:
@@ -124,7 +193,21 @@ class LLMProvider(ABC):
                             ) from exc
             except ModelUnavailableError as exc:
                 last_error = exc
+                emit_metric(
+                    "model_unavailable", request_id, provider=self.display_name,
+                    model=model, model_index=model_index,
+                    generation_total_ms=elapsed_ms(generation_start, time.perf_counter()),
+                    error_type=type(exc.__cause__ or exc).__name__,
+                )
                 log.warning("%s model %s unavailable: %s", self.display_name, model, exc)
+            except LLMError as exc:
+                emit_metric(
+                    "attempt_failed", request_id, provider=self.display_name,
+                    model=model, model_index=model_index,
+                    generation_total_ms=elapsed_ms(generation_start, time.perf_counter()),
+                    error_type=type(exc.__cause__ or exc).__name__,
+                )
+                raise
         if len(self.models) == 1:
             raise last_error
         raise LLMError(f"{self.display_name}: all models are unavailable. Last error: {last_error}")

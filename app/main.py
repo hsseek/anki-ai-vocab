@@ -11,20 +11,22 @@ AnkiConnect on the user's own computer (see app/anki.py and static/app.js).
 import sys
 import json
 import logging
+import secrets
 from contextlib import closing
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.anki import build_note, duplicate_query, note_type
 from app.config import ConfigError, Settings, load_settings
 from app.masking import check_meaning
+from app.metrics import emit_metric
 from app.notes import build_fields
 from app.providers.base import LLMError, LLMProvider
 from app.providers.factory import create_provider
-from app.schemas import GenerateRequest, GenerateResponse, NoteRequest
+from app.schemas import ClientGenerationMetric, GenerateRequest, GenerateResponse, NoteRequest
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -84,13 +86,16 @@ def create_app(settings: Settings | None = None, provider: LLMProvider | None = 
     @app.post("/api/generate/stream")
     def generate_stream(req: GenerateRequest):
         word = req.word.strip()
+        request_id = secrets.token_hex(6)
 
         def events():
             def encode(event):
                 return "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
 
             try:
-                with closing(provider.stream(word, req.language, req.num_examples)) as stream:
+                with closing(provider.stream(
+                    word, req.language, req.num_examples, request_id=request_id
+                )) as stream:
                     for event in stream:
                         if event["type"] == "meaning":
                             event = {
@@ -107,8 +112,16 @@ def create_app(settings: Settings | None = None, provider: LLMProvider | None = 
                             ).model_dump()}
                         yield encode(event)
             except LLMError as exc:
+                emit_metric(
+                    "generation_failed", request_id, provider=provider.display_name,
+                    error_type=type(exc).__name__,
+                )
                 yield encode({"type": "error", "detail": str(exc)})
-            except Exception:
+            except Exception as exc:
+                emit_metric(
+                    "generation_failed", request_id, provider=provider.display_name,
+                    error_type=type(exc).__name__,
+                )
                 logging.getLogger(__name__).exception("Vocabulary stream failed")
                 yield encode({"type": "error", "detail": "Generation failed. Please try again."})
 
@@ -116,6 +129,14 @@ def create_app(settings: Settings | None = None, provider: LLMProvider | None = 
             "Cache-Control": "no-cache, no-transform",
             "X-Accel-Buffering": "no",
         })
+
+    @app.post("/api/metrics/client", status_code=204)
+    def client_metric(metric: ClientGenerationMetric):
+        emit_metric(
+            "client_" + metric.event, metric.request_id,
+            elapsed_ms=metric.elapsed_ms,
+        )
+        return Response(status_code=204)
 
     @app.post("/api/note")
     def make_note(req: NoteRequest):

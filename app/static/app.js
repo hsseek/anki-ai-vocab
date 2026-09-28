@@ -211,6 +211,20 @@ async function generate(word, language = null) {
   $("preview").hidden = true;
   $("duplicate-box").hidden = true;
   showStatus(language ? `Generating in ${language}…` : "Generating…", "info");
+  const generationStarted = Date.now();
+  let requestId = null;
+  let firstMeaningReported = false;
+
+  function reportTiming(event) {
+    if (!requestId) return;
+    fetch("/api/metrics/client", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        request_id: requestId, event, elapsed_ms: Date.now() - generationStarted,
+      }),
+    }).catch(() => {}); // Metrics must never affect card generation.
+  }
   try {
     const response = await fetch("/api/generate/stream", {
       method: "POST",
@@ -219,6 +233,7 @@ async function generate(word, language = null) {
     });
     await readGenerationStream(response, (event) => {
       if (event.type === "start") {
+        requestId = event.request_id || requestId;
         state.result = {
           word, model: event.model, detected_language: language || "",
           language_code: "", meanings: [],
@@ -230,6 +245,10 @@ async function generate(word, language = null) {
         showModel(event.model);
         showStatus(event.attempt > 1 ? "Checking the response again…" : "Generating…", "info");
       } else if (event.type === "meaning") {
+        if (!firstMeaningReported) {
+          firstMeaningReported = true;
+          reportTiming("first_meaning");
+        }
         state.result.meanings.push(event.meaning);
         state.result.detected_language = event.detected_language || state.result.detected_language;
         state.result.language_code = event.language_code || state.result.language_code;
@@ -237,10 +256,12 @@ async function generate(word, language = null) {
         showStatus(`${state.result.meanings.length} meaning(s) received · still generating…`, "info");
       } else if (event.type === "done") {
         useResult(event.result);
+        reportTiming("complete");
       }
     });
     hideStatus();
   } catch (err) {
+    reportTiming("error");
     state.result = null;
     state.edits = [];
     state.selected = new Set();

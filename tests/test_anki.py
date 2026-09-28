@@ -174,6 +174,23 @@ def test_server_has_no_anki_routes():
     assert client.post("/api/add", json=NOTE_BODY).status_code in (404, 405)
 
 
+def test_client_timing_metric_is_validated_and_logged(caplog):
+    with caplog.at_level("INFO", logger="uvicorn.error.kanki.metrics"):
+        response = make_app().post("/api/metrics/client", json={
+            "request_id": "abc123", "event": "first_meaning", "elapsed_ms": 432,
+        })
+    assert response.status_code == 204
+    record = next(
+        record for record in caplog.records
+        if record.name == "uvicorn.error.kanki.metrics"
+    )
+    assert '"metric":"client_first_meaning"' in record.message
+    assert '"elapsed_ms":432' in record.message
+    assert make_app().post("/api/metrics/client", json={
+        "request_id": "abc123", "event": "word", "elapsed_ms": 1,
+    }).status_code == 422
+
+
 def test_generate_route_keeps_word_and_flags(sample_result):
     sample_result["meanings"][1]["examples_masked"][0] = "He runs a small shop."  # model missed it
     client = make_app(sample_result)
