@@ -1,13 +1,13 @@
 import pytest
 
-from app.config import DEFAULT_ANKICONNECT_URL, ConfigError, load_settings
+from app.config import ConfigError, load_settings
 from app.providers.claude import ClaudeProvider
 from app.providers.factory import create_provider
 from app.providers.openai_provider import OpenAIProvider
 
-CLAUDE_ENV = {"LLM_PROVIDER": "claude", "ANTHROPIC_API_KEY": "sk-ant-test", "ANTHROPIC_MODEL": "claude-test"}
-GEMINI_ENV_BASE = {"LLM_PROVIDER": "gemini", "GEMINI_API_KEY": "AIza-test"}
-OPENAI_ENV = {"LLM_PROVIDER": "openai", "OPENAI_API_KEY": "sk-test", "OPENAI_MODEL": "gpt-test"}
+CLAUDE_ENV = {"LLM_PROVIDER": "claude", "ANTHROPIC_API_KEY": "sk-ant-test", "ANTHROPIC_MODEL": "claude-test", "ANKI_USERS": "sun:8765,kay:8766"}
+GEMINI_ENV_BASE = {"LLM_PROVIDER": "gemini", "GEMINI_API_KEY": "AIza-test", "ANKI_USERS": "sun:8765,kay:8766"}
+OPENAI_ENV = {"LLM_PROVIDER": "openai", "OPENAI_API_KEY": "sk-test", "OPENAI_MODEL": "gpt-test", "ANKI_USERS": "sun:8765,kay:8766"}
 
 
 def test_missing_provider():
@@ -45,13 +45,19 @@ def test_only_selected_provider_is_required():
     assert settings.provider == "claude"
     assert settings.api_key == "sk-ant-test"
     assert settings.models == ("claude-test",)
-    assert settings.ankiconnect_url == DEFAULT_ANKICONNECT_URL
+    assert settings.anki_users == (("sun", 8765), ("kay", 8766))
 
 
-def test_provider_name_is_case_insensitive_and_url_override():
-    settings = load_settings({**OPENAI_ENV, "LLM_PROVIDER": " OpenAI ", "ANKICONNECT_URL": "http://localhost:9999"})
+def test_anki_users_required_and_unique():
+    with pytest.raises(ConfigError, match="ANKI_USERS is required"):
+        load_settings({k: v for k, v in CLAUDE_ENV.items() if k != "ANKI_USERS"})
+    with pytest.raises(ConfigError, match="unique"):
+        load_settings({**CLAUDE_ENV, "ANKI_USERS": "sun:8765,kay:8765"})
+
+
+def test_provider_name_is_case_insensitive():
+    settings = load_settings({**OPENAI_ENV, "LLM_PROVIDER": " OpenAI "})
     assert settings.provider == "openai"
-    assert settings.ankiconnect_url == "http://localhost:9999"
 
 
 def test_model_setting_accepts_fallback_list():
@@ -77,7 +83,7 @@ def test_factory_picks_openai():
     assert provider.model == "gpt-test"
 
 
-GEMINI_ENV = {"LLM_PROVIDER": "gemini", "GEMINI_API_KEY": "AIza-test", "GEMINI_MODEL": "gemini-test"}
+GEMINI_ENV = {"LLM_PROVIDER": "gemini", "GEMINI_API_KEY": "AIza-test", "GEMINI_MODEL": "gemini-test", "ANKI_USERS": "sun:8765,kay:8766"}
 
 
 @pytest.mark.parametrize("missing", ["GEMINI_API_KEY", "GEMINI_MODEL"])

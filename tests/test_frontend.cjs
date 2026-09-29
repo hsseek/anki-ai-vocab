@@ -154,3 +154,26 @@ test("Retry clears provisional results and failure cannot leave an addable note"
   await context.addToAnki();
   assert.equal(called, false);
 });
+
+test("Add goes to server and displays separate sync status", async () => {
+  const { context, nodes } = environment();
+  context.result = result;
+  vm.runInContext("state.result = result; state.edits = [{...result.meanings[0], synonyms: 'sprint'}]; state.selected = new Set([0]);", context);
+  nodes.get("field-word").value = "run";
+  nodes.get("field-language").value = "English";
+  nodes.get("deck-select").value = "Vocab";
+  const requests = [];
+  context.fetch = async (url, options) => {
+    requests.push([url, JSON.parse(options.body)]);
+    return new Response(JSON.stringify({ duplicate: false, note_id: 12,
+      sync: { state: "finished", detail: "" } }), {
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+  await context.addToAnki();
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0][0], "/api/add?allow_duplicate=false");
+  assert.equal(requests[0][1].word, "run");
+  assert.match(nodes.get("sync-status").textContent, /sync finished/);
+  assert.equal(nodes.get("word-input").value, "");
+});

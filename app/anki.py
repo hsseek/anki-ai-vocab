@@ -1,10 +1,4 @@
-"""The "AI Vocab" note type and the AnkiConnect requests the browser sends.
-
-The server never talks to Anki. The browser calls AnkiConnect on the
-computer it runs on (http://127.0.0.1:8765), so cards go to the Anki on
-whichever computer you use. This module builds what the browser needs:
-the note type definition, the note itself and the duplicate search query.
-"""
+"""The AI Vocab note type and AnkiConnect payload helpers."""
 
 from app.notes import esc
 

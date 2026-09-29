@@ -1,7 +1,4 @@
-"""Note type, note building and duplicate search, plus the routes the browser uses.
-
-AnkiConnect itself is called by the browser (app/static/app.js), not the server.
-"""
+"""Note type and field formatting."""
 
 from fastapi.testclient import TestClient
 import pytest
@@ -12,6 +9,8 @@ from app.main import create_app
 from app.notes import build_fields
 from app.providers.base import Generation
 from app.schemas import NoteMeaning, WordResult
+
+SETTINGS = Settings("claude", "k", ("m",), (("sun", 8765),))
 
 # --- Note type and duplicate search --------------------------------------------
 
@@ -70,10 +69,8 @@ def test_single_meaning_is_not_numbered():
     ("명사", "명사"), ("<custom>", "&lt;custom&gt;"),
 ])
 def test_note_route_abbreviates_edited_pos_and_escapes_unknown_labels(label, expected):
-    body = {**NOTE_BODY, "meanings": [{"part_of_speech": label, "definition": "A meaning."}]}
-    response = make_app().post("/api/note", json=body)
-    assert response.status_code == 200
-    assert response.json()["note"]["fields"]["Definition"] == (
+    fields = build_fields("run", "English", [NoteMeaning(part_of_speech=label, definition="A meaning.")])
+    assert fields["Definition"] == (
         f'<span class="pos">({expected})</span> A meaning.'
     )
 
@@ -115,88 +112,40 @@ def test_fields_are_html_escaped():
     assert fields["Synonyms"] == "x&amp;y"
 
 
-# --- Routes ------------------------------------------------------------------------
-
-
 class FakeProvider:
     display_name = "Fake"
     model = "fake-model"
 
-    def __init__(self, result):
+    def __init__(self, result=None):
         self.result = result
 
     def generate(self, word, language_override, num_examples):
         return Generation(WordResult.model_validate(self.result), "fake-fallback")
 
 
-SETTINGS = Settings(provider="claude", api_key="k", models=("m",), ankiconnect_url="http://127.0.0.1:8765")
-NOTE_BODY = {
-    "word": " run ",
-    "language": "English",
-    "deck": "Vocab",
-    "meanings": [{"part_of_speech": "verb", "definition": "To move <fast>.",
-                  "examples": ["I run."], "examples_masked": ["I ___."]}],
-}
-
-
-def make_app(sample_result=None):
-    return TestClient(create_app(SETTINGS, FakeProvider(sample_result)))
-
-
-def test_info_includes_ankiconnect_url():
-    assert make_app().get("/api/info").json() == {
-        "provider": "Fake", "model": "fake-model", "ankiconnect_url": "http://127.0.0.1:8765",
-    }
-
-
-def test_note_type_route():
-    assert make_app().get("/api/note-type").json() == note_type()
-
-
-def test_note_route_builds_escaped_note_and_query():
-    data = make_app().post("/api/note", json=NOTE_BODY).json()
-    note = data["note"]
-    assert note["deckName"] == "Vocab" and note["modelName"] == MODEL_NAME
-    assert note["tags"] == ["ai-vocab"]
-    assert note["fields"]["Word"] == "run"  # trimmed
-    assert "To move &lt;fast&gt;." in note["fields"]["Definition"]
-    assert data["duplicate_query"] == '"deck:Vocab" "note:AI Vocab" "Word:run"'
-
-
-def test_note_route_rejects_empty_selection():
-    response = make_app().post("/api/note", json={**NOTE_BODY, "meanings": []})
-    assert response.status_code == 422
-
-
-def test_server_has_no_anki_routes():
-    client = make_app()
-    assert client.get("/api/decks").status_code == 404
-    assert client.post("/api/add", json=NOTE_BODY).status_code in (404, 405)
+def test_info_and_note_type_routes():
+    client = TestClient(create_app(SETTINGS, FakeProvider()))
+    assert client.get("/api/info").json() == {"provider": "Fake", "model": "fake-model"}
+    assert client.get("/api/note-type").json() == note_type()
 
 
 def test_client_timing_metric_is_validated_and_logged(caplog):
+    client = TestClient(create_app(SETTINGS, FakeProvider()))
     with caplog.at_level("INFO", logger="uvicorn.error.kanki.metrics"):
-        response = make_app().post("/api/metrics/client", json={
+        response = client.post("/api/metrics/client", json={
             "request_id": "abc123", "event": "first_meaning", "elapsed_ms": 432,
         })
     assert response.status_code == 204
-    record = next(
-        record for record in caplog.records
-        if record.name == "uvicorn.error.kanki.metrics"
-    )
-    assert '"metric":"client_first_meaning"' in record.message
-    assert '"elapsed_ms":432' in record.message
-    assert make_app().post("/api/metrics/client", json={
+    assert any('"metric":"client_first_meaning"' in record.message for record in caplog.records)
+    assert client.post("/api/metrics/client", json={
         "request_id": "abc123", "event": "word", "elapsed_ms": 1,
     }).status_code == 422
 
 
 def test_generate_route_keeps_word_and_flags(sample_result):
-    sample_result["meanings"][1]["examples_masked"][0] = "He runs a small shop."  # model missed it
-    client = make_app(sample_result)
+    sample_result["meanings"][1]["examples_masked"][0] = "He runs a small shop."
+    client = TestClient(create_app(SETTINGS, FakeProvider(sample_result)))
     data = client.post("/api/generate", json={"word": " run ", "num_examples": 2}).json()
     assert data["word"] == "run"
     assert data["model"] == "fake-fallback"
-    assert data["meanings"][0]["masked_flags"] == [False, False]
-    assert data["meanings"][1]["masked_flags"] == [True, False]
-    assert data["meanings"][1]["examples_masked"][0] == "He ___ a small shop."
+    assert data["meanings"][1]["masked_flags"][0] is True

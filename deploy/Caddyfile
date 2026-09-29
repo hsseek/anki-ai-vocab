@@ -38,6 +38,9 @@ __DOMAIN__ {
 		basic_auth {
 			import /etc/caddy/anki-ai-vocab.users
 		}
-		reverse_proxy 127.0.0.1:8000
+		reverse_proxy 127.0.0.1:8000 {
+			# Overwrite any client-supplied identity with the verified login.
+			header_up X-Kanki-User {http.auth.user.id}
+		}
 	}
 }

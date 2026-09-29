@@ -4,8 +4,7 @@ Start with `./run.sh`, which calls `create_app()` through uvicorn's --factory fl
 Routes are plain `def` functions: FastAPI runs them in a thread pool, so the
 blocking SDK calls don't stall the server.
 
-The server only talks to the LLM. Anki is reached by the browser, which calls
-AnkiConnect on the user's own computer (see app/anki.py and static/app.js).
+AnkiConnect is reached on the server, using the login ID passed by Caddy.
 """
 
 import sys
@@ -15,15 +14,15 @@ import secrets
 from contextlib import closing
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.anki import build_note, duplicate_query, note_type
+from app.anki import note_type
 from app.config import ConfigError, Settings, load_settings
 from app.masking import check_meaning
 from app.metrics import emit_metric
-from app.notes import build_fields
+from app.server_anki import AnkiError, ServerAnki
 from app.providers.base import LLMError, LLMProvider
 from app.providers.factory import create_provider
 from app.schemas import ClientGenerationMetric, GenerateRequest, GenerateResponse, NoteRequest
@@ -31,7 +30,8 @@ from app.schemas import ClientGenerationMetric, GenerateRequest, GenerateRespons
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
-def create_app(settings: Settings | None = None, provider: LLMProvider | None = None) -> FastAPI:
+def create_app(settings: Settings | None = None, provider: LLMProvider | None = None,
+               anki: ServerAnki | None = None) -> FastAPI:
     """Build the app. Tests pass a fake `provider`."""
     if settings is None:
         try:
@@ -42,6 +42,7 @@ def create_app(settings: Settings | None = None, provider: LLMProvider | None = 
             sys.exit(1)
 
     provider = provider or create_provider(settings)
+    anki = anki or ServerAnki(settings.anki_users, Path.home() / ".local/state/kanki")
 
     app = FastAPI(title="Kanki")
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -49,6 +50,16 @@ def create_app(settings: Settings | None = None, provider: LLMProvider | None = 
     @app.exception_handler(LLMError)
     def llm_error(_: Request, exc: LLMError):
         return JSONResponse(status_code=502, content={"detail": str(exc)})
+
+    @app.exception_handler(AnkiError)
+    def anki_error(_: Request, exc: AnkiError):
+        return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+    def login_user(request: Request) -> str:
+        user = request.headers.get("x-kanki-user", "")
+        if user not in anki.ports:
+            raise HTTPException(status_code=401, detail="Unknown or missing login.")
+        return user
 
     # --- Routes ---
 
@@ -58,11 +69,10 @@ def create_app(settings: Settings | None = None, provider: LLMProvider | None = 
 
     @app.get("/api/info")
     def info():
-        """Provider and main model for the UI label, and where the browser finds AnkiConnect."""
+        """Provider and main model for the UI label."""
         return {
             "provider": provider.display_name,
             "model": provider.model,
-            "ankiconnect_url": settings.ankiconnect_url,
         }
 
     @app.post("/api/generate", response_model=GenerateResponse)
@@ -138,14 +148,20 @@ def create_app(settings: Settings | None = None, provider: LLMProvider | None = 
         )
         return Response(status_code=204)
 
-    @app.post("/api/note")
-    def make_note(req: NoteRequest):
-        """Build the note (HTML-escaped fields) and the duplicate search for the browser."""
-        word = req.word.strip()
-        fields = build_fields(word, req.language, req.meanings)
-        return {
-            "note": build_note(req.deck, fields),
-            "duplicate_query": duplicate_query(req.deck, word),
-        }
+    @app.get("/api/decks")
+    def decks(request: Request):
+        return anki.decks(login_user(request))
+
+    @app.post("/api/add")
+    def add_note(req: NoteRequest, request: Request, allow_duplicate: bool = False):
+        return anki.add(login_user(request), req, allow_duplicate)
+
+    @app.get("/api/sync")
+    def sync_status(request: Request):
+        return anki.status(login_user(request))
+
+    @app.post("/api/sync")
+    def retry_sync(request: Request):
+        return anki.retry_sync(login_user(request))
 
     return app

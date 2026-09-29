@@ -1,8 +1,7 @@
 // Kanki frontend: plain JavaScript, no build step.
 // Model text is always inserted with textContent / value, never innerHTML.
 //
-// The server generates the content; this page talks to AnkiConnect on the
-// computer the browser runs on, so cards go to *this* computer's Anki.
+// The server generates content and adds cards to the authenticated user's Anki.
 
 "use strict";
 
@@ -89,66 +88,33 @@ function setBusy(busy) {
 }
 
 // ---------------------------------------------------------------------------
-// AnkiConnect, called directly from the browser
+// Server Anki and sync status
 // ---------------------------------------------------------------------------
-
-const ANKI_UNAVAILABLE = "Open Anki desktop and make sure the AnkiConnect add-on is installed.";
-let ankiAllowed = false; // AnkiConnect granted this page access
-let modelReady = false;  // the "AI Vocab" note type exists
-
-// Call one AnkiConnect action (API version 6) and return its result.
-async function anki(action, params = {}) {
-  let response;
-  try {
-    // No Content-Type header: this keeps it a "simple" request without a CORS preflight.
-    response = await fetch(info.ankiconnect_url, {
-      method: "POST",
-      body: JSON.stringify({ action, version: 6, params }),
-    });
-  } catch {
-    // Anki is closed, AnkiConnect is missing, or it rejected this page's origin.
-    throw new Error(ANKI_UNAVAILABLE);
+let syncTimer = null;
+function showSync(sync) {
+  const box = $("sync-status");
+  const labels = {
+    idle: "No sync requested yet.", queued: "Sync queued…",
+    running: "Syncing with AnkiWeb…", finished: "Anki collection sync finished.",
+    error: `Sync needs attention: ${sync.detail || "Check server Anki."}`,
+  };
+  box.textContent = labels[sync.state] || "Sync status unknown.";
+  $("retry-sync-btn").hidden = sync.state !== "error";
+  if (syncTimer) clearTimeout(syncTimer);
+  if (sync.state === "queued" || sync.state === "running") {
+    syncTimer = setTimeout(refreshSync, 2000);
   }
-  const data = await response.json().catch(() => null);
-  if (!data || !("error" in data) || !("result" in data)) {
-    throw new Error("Unexpected response from AnkiConnect. Is the add-on up to date?");
-  }
-  if (data.error) throw new Error(`AnkiConnect error (${action}): ${data.error}`);
-  return data.result;
 }
-
-// Ask AnkiConnect for access. The first time, Anki shows a dialog asking
-// whether this page may use it; "Yes" adds the page to AnkiConnect's allowlist.
-async function connectAnki() {
-  if (ankiAllowed) return;
-  const res = await anki("requestPermission");
-  if (res.permission !== "granted") {
-    throw new Error(
-      `Anki refused access for ${location.origin}. Reload and click Yes in Anki's dialog, ` +
-      `or add ${location.origin} to "webCorsOriginList" in Tools → Add-ons → AnkiConnect → Config, then restart Anki.`
-    );
-  }
-  if (res.requireApikey) {
-    throw new Error("AnkiConnect has an API key set (apiKey), which this app does not support. Remove it in the AnkiConnect config.");
-  }
-  ankiAllowed = true;
-}
-
-// Create the "AI Vocab" note type in this computer's Anki if it is missing.
-async function ensureModel() {
-  if (modelReady) return;
-  const noteType = await api("/api/note-type");
-  const names = await anki("modelNames");
-  if (!names.includes(noteType.modelName)) await anki("createModel", noteType);
-  modelReady = true;
+async function refreshSync() {
+  try { showSync(await api("/api/sync")); }
+  catch (err) { showSync({ state: "error", detail: err.message }); }
 }
 
 // ---------------------------------------------------------------------------
 // Startup
 // ---------------------------------------------------------------------------
 
-// From /api/info: provider name, main model and the AnkiConnect address.
-const info = { provider: "", model: "", ankiconnect_url: "http://127.0.0.1:8765" };
+const info = { provider: "", model: "" };
 
 function showModel(model) {
   const fallback = model !== info.model ? " (fallback)" : "";
@@ -167,9 +133,7 @@ async function loadInfo() {
 async function loadDecks() {
   const select = $("deck-select");
   try {
-    showStatus("Connecting to Anki… If Anki asks whether this site may access it, click Yes.", "info");
-    await connectAnki();
-    const decks = await anki("deckNames");
+    const decks = await api("/api/decks");
     hideStatus();
     select.replaceChildren(...decks.map((d) => el("option", { value: d, textContent: d })));
     const last = load(STORAGE_DECK);
@@ -381,7 +345,7 @@ function renderPreview() {
 // Add to Anki
 // ---------------------------------------------------------------------------
 
-// The note as edited in the preview, in the shape /api/note expects.
+// The note as edited in the preview, in the shape /api/add expects.
 function buildNoteRequest() {
   const indexes = [...state.selected].sort((a, b) => a - b);
   return {
@@ -414,24 +378,13 @@ async function addToAnki(allowDuplicate = false) {
   setBusy(true);
   $("duplicate-box").hidden = true;
   try {
-    await connectAnki();
-    // The server builds the HTML-escaped fields and the duplicate search.
-    const { note, duplicate_query } = await api("/api/note", request);
-
-    if (!allowDuplicate) {
-      const existing = await anki("findNotes", { query: duplicate_query });
-      if (existing.length > 0) {
-        $("duplicate-box").hidden = false;
-        hideStatus();
-        return;
-      }
+    const result = await api(`/api/add?allow_duplicate=${allowDuplicate}`, request);
+    if (result.duplicate) {
+      $("duplicate-box").hidden = false;
+      hideStatus();
+      return;
     }
-
-    await ensureModel();
-    await anki("addNote", {
-      // duplicateScope "deck" matches our own check: duplicates only count within a deck.
-      note: { ...note, options: { allowDuplicate, duplicateScope: "deck" } },
-    });
+    showSync(result.sync);
     save(STORAGE_DECK, request.deck);
     showStatus(`Added “${request.word}” to ${request.deck}.`, "success");
     resetForNextWord();
@@ -475,7 +428,12 @@ $("deck-select").addEventListener("change", () => save(STORAGE_DECK, $("deck-sel
 $("add-btn").addEventListener("click", () => addToAnki(false));
 $("add-anyway-btn").addEventListener("click", () => addToAnki(true));
 $("cancel-btn").addEventListener("click", () => { $("duplicate-box").hidden = true; });
+$("retry-sync-btn").addEventListener("click", async () => {
+  try { showSync(await api("/api/sync", {})); }
+  catch (err) { showSync({ state: "error", detail: err.message }); }
+});
 
 initSettings();
-// The AnkiConnect address comes from /api/info, so load decks after it.
-loadInfo().then(loadDecks);
+loadInfo();
+loadDecks();
+refreshSync();

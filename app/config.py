@@ -1,6 +1,7 @@
 """Load and validate settings from the environment / .env file."""
 
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -8,7 +9,6 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
-DEFAULT_ANKICONNECT_URL = "http://127.0.0.1:8765"
 
 # Settings each provider needs: provider -> (api key variable, model variable)
 PROVIDER_VARS = {
@@ -27,7 +27,7 @@ class Settings:
     provider: str  # "claude", "openai" or "gemini"
     api_key: str
     models: tuple[str, ...]  # main model first, then fallbacks
-    ankiconnect_url: str  # AnkiConnect address as seen from the browser's computer
+    anki_users: tuple[tuple[str, int], ...]  # authenticated ID -> server loopback port
 
 
 def load_settings(env: Mapping[str, str] | None = None) -> Settings:
@@ -64,9 +64,28 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
     if not models:
         raise ConfigError(f"{model_var} in .env does not contain a model name.")
 
+    users = []
+    ports = set()
+    for entry in get("ANKI_USERS").split(","):
+        if not entry.strip():
+            continue
+        name, sep, port_text = entry.strip().partition(":")
+        if not sep or not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+            raise ConfigError("ANKI_USERS must list ID:PORT pairs, e.g. sun:8765,kay:8766.")
+        try:
+            port = int(port_text)
+        except ValueError as exc:
+            raise ConfigError(f"Invalid AnkiConnect port for {name!r}.") from exc
+        if not 1024 <= port <= 65535 or port in ports or name in dict(users):
+            raise ConfigError("ANKI_USERS requires unique IDs and ports from 1024 to 65535.")
+        users.append((name, port))
+        ports.add(port)
+    if not users:
+        raise ConfigError("ANKI_USERS is required (for example, ANKI_USERS=sun:8765,kay:8766).")
+
     return Settings(
         provider=provider,
         api_key=get(key_var),
         models=models,
-        ankiconnect_url=get("ANKICONNECT_URL") or DEFAULT_ANKICONNECT_URL,
+        anki_users=tuple(users),
     )

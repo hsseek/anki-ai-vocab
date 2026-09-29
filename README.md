@@ -3,25 +3,23 @@
 A small local web app that turns a word into an Anki vocabulary note.
 You type a word, an LLM (Claude, OpenAI or Gemini) writes its meanings, definitions,
 examples and synonyms in the word's own language, you pick meanings and edit
-the preview, and your browser adds one note to the Anki desktop app on the
-computer you are using, through AnkiConnect.
+the preview, and the server adds one note to your own Anki profile. It then
+starts an AnkiWeb sync in the background.
 
 - Works with any language the model knows; definitions and examples stay in
   the word's language, never translated.
 - Creates a note with a forward card (word → meaning) and a reverse card
   (definition + examples with the word blanked out → word).
-- Run it on your own computer, or on a home server and open it from any of
-  your computers: cards always go to the Anki on the computer in front of you.
+- Open it from any browser. Only the server needs Anki and AnkiConnect.
 - API keys stay on the server and never reach the browser.
 
 Requires Python 3.10+ and Anki desktop.
 
 ## Setup (Ubuntu)
 
-1. **Install Anki and AnkiConnect.**
-   Install Anki desktop from <https://apps.ankiweb.net>. In Anki, open
-   *Tools → Add-ons → Get Add-ons…*, enter the code `2055492159`, then restart Anki.
-   Keep Anki open while you use Kanki.
+1. **Install Anki on the server.** Install Anki desktop from
+   <https://apps.ankiweb.net>. AnkiConnect is installed once in each isolated
+   server Anki instance below.
 
 2. **Get the code, create a virtual environment and install the requirements.**
 
@@ -60,12 +58,12 @@ Requires Python 3.10+ and Anki desktop.
    out, the app tries the next one, and the label at the top shows
    "(fallback)". Other errors, such as a wrong API key, are shown right away.
 
-   `ANKICONNECT_URL` defaults to `http://127.0.0.1:8765`. The *browser* calls
-   this address, so `127.0.0.1` means the Anki on the computer you browse from.
+   Set `ANKI_USERS` to the Caddy login IDs and their separate loopback
+   AnkiConnect ports, for example `sun:8765,kay:8766`.
 
    `.env` holds your API key and is listed in `.gitignore`, so it is never committed.
 
-4. **Run it.**
+4. **Run it after configuring the Anki profiles below.**
 
    ```bash
    ./run.sh
@@ -74,18 +72,17 @@ Requires Python 3.10+ and Anki desktop.
    Open <http://127.0.0.1:8000>. The server listens on `127.0.0.1` only.
    Set `PORT=8001 ./run.sh` to use another port.
 
-   **The first time**, Anki shows a dialog: *"A website wants to access to
-   Anki"*. Click **Yes**. AnkiConnect then remembers the page's address (it is
-   added to `webCorsOriginList` in the AnkiConnect config). You need to do this
-   once per computer and per address you open the app at.
+   For use without Caddy, requests to Anki routes need an authenticated
+   `X-Kanki-User` header. The Caddy configuration supplies this after login.
 
 5. **Switch providers** by changing `LLM_PROVIDER` in `.env` and restarting the server.
 
 ## Running on a server (open it from any computer)
 
-The app can run on an always-on Linux server, such as a home server, while
-cards still go to the Anki on the computer you use: the server generates the
-content, and the page in your browser adds the note to your local Anki.
+The server runs one isolated Anki instance per login. Each uses a separate
+data folder, AnkiWeb account, AnkiConnect port and virtual display. Caddy
+passes the verified login ID to the app; the app never accepts a profile or
+AnkiConnect URL from the browser.
 
 On the server, [Caddy](https://caddyserver.com) sits in front of the app. It
 gets a free HTTPS certificate and asks for an ID and password on every
@@ -93,7 +90,7 @@ request. The app itself only listens on `127.0.0.1`.
 
 ```
 browser ──HTTPS + ID/password──▶ Caddy (443) ──▶ app (127.0.0.1:8000) ──▶ LLM
-   └──▶ AnkiConnect on your own computer (127.0.0.1:8765)
+                                              └──▶ user's AnkiConnect ──▶ AnkiWeb
 ```
 
 You need a domain name pointing to your home IP (a router's DDNS name works,
@@ -134,10 +131,59 @@ HTTPS.
    sudo deploy/setup-caddy.sh --private-cert name.iptime.org sun kay
    ```
 
-3. **Each computer.** Open Anki (with AnkiConnect), then open
-   `https://<your domain>` and log in. Click **Yes** in Anki's permission dialog.
-   Your browser may also ask to let the site access apps on your device or local
-   network; allow it, since that is how the page reaches your local Anki.
+3. **Configure one server Anki per login.** Install `xvfb`, `xauth`, and a
+   temporary VNC viewer server for the first setup, along with Anki's Linux
+   dependencies. On Ubuntu, `sudo deploy/install-server-prereqs.sh` installs
+   these dependencies and enables the authenticated Caddy login header. Then:
+
+   ```bash
+   deploy/configure-anki-profile.sh sun 8765 91
+   deploy/configure-anki-profile.sh kay 8766 92
+   ```
+
+   If Anki is unpacked in your home directory instead of installed on the
+   system path, prefix each configure command with
+   `KANKI_ANKI_BIN=/absolute/path/to/anki`.
+
+   `configure-anki-profile.sh` creates a separate data folder and a user
+   service for each login. Do not reuse an existing Anki data folder. The
+   service installs the bundled sync-status hook. Install AnkiConnect in each
+   profile (add-on code `2055492159`) and set its `webBindAddress` to
+   `127.0.0.1` and `webBindPort` to that profile's configured port. The
+   deployment can also preinstall the official `.ankiaddon` package with
+   `deploy/install-ankiconnect.py` before starting a new profile.
+
+   To view a profile's virtual display for first-time setup, attach `x11vnc`
+   over an SSH tunnel. For `sun`, run on your laptop:
+
+   ```bash
+   ssh -L 5991:127.0.0.1:5991 g3 \
+     'x11vnc -display :91 -auth ~/.config/kanki/xauth-sun -localhost -nopw -rfbport 5991'
+   ```
+
+   Connect a VNC viewer to `127.0.0.1:5991`. In that Anki window, sign in to
+   **sun's own** AnkiWeb account. If the account already has cards, choose **Download**
+   during the first sync; if it is empty, choose **Upload**. Repeat for `kay`
+   with display `:92`, port `5992` for the tunnel, AnkiConnect port `8766`,
+   and kay's separate AnkiWeb account. Restart each service after installing
+   AnkiConnect or changing its port:
+
+   ```bash
+   systemctl --user restart anki-profile@sun anki-profile@kay
+   ```
+
+   The first sync direction matters: choosing Upload over an existing
+   AnkiWeb collection can replace its contents. Make a backup before setup.
+   Once both profiles respond on their configured ports, restart the web app.
+
+4. **Each computer.** Open `https://<your domain>` and log in. The page lists
+   decks from that login's server Anki. After a card is added, the separate
+   sync line shows queued, running or finished. On failure it offers Retry.
+   No client-side Anki or AnkiConnect installation is needed.
+
+   When upgrading an existing Caddy installation, run
+   `sudo deploy/enable-caddy-user-header.sh` once so Caddy forwards the
+   authenticated login ID to the app.
 
 ### Installing the private root certificate (only with `--private-cert`)
 
@@ -240,10 +286,8 @@ When several meanings are selected they share one note, numbered the same way in
 node --test tests/test_frontend.cjs
 ```
 
-Tests mock all LLM SDKs, including streamed chunks, and make no network calls.
-The frontend tests require Node.js 18+ (only for tests, not for running the app).
-AnkiConnect is called
-by the browser (`app/static/app.js`), so it is not part of the Python tests.
+Tests mock all LLM SDKs and the per-user AnkiConnect calls; they make no real
+network calls. The frontend tests require Node.js 18+ only for testing.
 
 ## Project layout
 
@@ -254,9 +298,10 @@ app/schemas.py           Pydantic models shared by providers and routes
 app/prompts.py           the shared system prompt
 app/providers/           LLMProvider interface, Claude/OpenAI/Gemini providers, factory
 app/anki.py              the note type, note and duplicate query for AnkiConnect
+app/server_anki.py       per-login AnkiConnect access and sync status
 app/notes.py             builds the note's HTML fields
 app/masking.py           fallback masking and checks
-app/static/              HTML, CSS, JavaScript (including the AnkiConnect calls)
-deploy/                  server setup: systemd service, Caddyfile, login scripts
+app/static/              HTML, CSS and JavaScript
+deploy/                  server setup, Anki profile services, Caddy and logins
 tests/                   pytest tests
 ```

@@ -1,0 +1,17 @@
+[Unit]
+Description=Anki profile for Kanki login %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/kanki/anki-%i.env
+Environment=KANKI_SYNC_STATUS_FILE=%h/.local/state/kanki/%i.json
+Environment=ANKICONNECT_BIND_ADDRESS=127.0.0.1
+Environment=ANKI_SINGLE_INSTANCE_KEY=kanki-%i
+ExecStart=%h/anki-ai-vocab/deploy/run-anki-profile.sh %i
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
